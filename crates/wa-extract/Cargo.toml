@@ -1,0 +1,14 @@
+[package]
+name = "wa-extract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wa-core = { workspace = true }
+webclaw-fetch = { workspace = true }
+webclaw-core = { git = "https://github.com/0xMassi/webclaw", rev = "923445f" }
+
+[dev-dependencies]
+wiremock = { workspace = true }
+tokio = { workspace = true }
