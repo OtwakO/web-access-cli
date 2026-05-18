@@ -30,7 +30,7 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 
 # External — webclaw full stack (fetching + extraction, AGPL-3.0)
 # Pinned to a specific commit for reproducible builds.
-webclaw-fetch = { git = "https://github.com/0xMassi/webclaw", rev = "923445f" }
+webclaw-fetch = { git = "https://github.com/0xMassi/webclaw", rev = "3fabdc1" }
 
 # Dev dependencies
 wiremock = "0.6"

@@ -163,7 +163,7 @@ enum Commands {
         #[arg(required = true)]
         urls: Vec<String>,
 
-        /// Browser endpoint URL (default: http://localhost:8000)
+        /// Browser endpoint URL (default: http://localhost:8000/html?url=)
         #[arg(long)]
         browser_endpoint: Option<String>,
 
@@ -1020,9 +1020,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 let mut results: Vec<wa_extract::BatchExtractResult> = Vec::new();
                 for url in &urls {
-                    let html = fetch_browser_html(&client, &endpoint, url).await?;
-                    let result = wa_extract::extract_with_options(&html, Some(url), &options)
-                        .map_err(|e| format!("extraction failed: {}", e));
+                    let result = match fetch_browser_html(&client, &endpoint, url).await {
+                        Ok(html) => wa_extract::extract_with_options(&html, Some(url), &options)
+                            .map_err(|e| format!("extraction failed: {}", e)),
+                        Err(e) => Err(format!("{}", e)),
+                    };
                     results.push(wa_extract::BatchExtractResult {
                         url: url.clone(),
                         result: result.map_err(|e| wa_core::error::WaError::Fetch {

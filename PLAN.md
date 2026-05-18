@@ -18,6 +18,7 @@
 | 1 | `wa search` | Web search via SearXNG, optional page extraction | webclaw-fetch (BoringSSL TLS fingerprinting) | webclaw-core (95.1% accuracy) |
 | 2 | `wa fetch` | Fetch URL → extract clean content | webclaw-fetch (BoringSSL TLS fingerprinting) | webclaw-core (95.1% accuracy) |
 | 3 | `wa git` | Clone repo → list text files | git CLI (shallow clone) | N/A (raw files) |
+| 4 | `wa browser` | Fetch via browser-backed rendering endpoint → extract content | Browser endpoint (HTTP GET) | webclaw-core (95.1% accuracy) |
 
 **Every page fetched by this tool goes through webclaw's extraction pipeline, not Readability.**
 No garbage in, garbage out. Every output format (markdown, LLM-optimized,
@@ -1569,6 +1570,37 @@ cargo run -- git https://github.com/serde-rs/serde --max-files 10
 - **Verified** all 5 priority layers: `wa --config FILE config` shows file values; `WA_SEARXNG_URL=... wa config` shows env override; `wa search --searxng-url ...` shows CLI override; all Layers work correctly.
 - **Design insight**: `trailing_var_arg = true` on query means all named flags MUST come before the search query text. `wa search --limit 1 "query"` works; `wa search "query" --limit 1` captures `--limit 1` as query text (clap behavior, not a regression).
 - **Design insight**: removed `allow_hyphen_values = true` on the query field would break this silently (clap error on `--limit` in query text) rather than capturing it. Keeping `allow_hyphen_values` lets searches with hyphens through while maintaining the flag-before-query contract.
+
+### Step 10 — Git tree-only mode ✅
+- 70 tests pass, 2 ignored, 0 fails.
+- **Added** `--tree-only` flag to `wa git` — outputs file tree with paths and sizes, no file contents. Token-efficient for AI agents that only need to know where files live.
+- **Added** `TreeEntry` struct to `wa-core::types` (`path: String`, `size: u64`) and `tree: Option<Vec<TreeEntry>>` field on `ClonedRepo`.
+- **Added** `tree_only: bool` to `GitCloneOptions` in `wa-git`.
+- **Added** `walk_tree_only()` in `wa-git` — walks cloned repo collecting path + size without reading contents, respecting same filters (binary, noise dirs, hidden files, lockfiles) and `max_files` cap.
+- **Added** `format_git_tree_markdown()` in `wa-cli` — recursive directory tree renderer with proper ASCII art (├── / └── branches, │ continuation pipes, BTreeMap grouping, directory entries auto-inserted for nested traversal).
+- **Added** `format_git_tree_text()` in `wa-cli` — flat listing of relative path + human-readable size.
+- **Added** `format_size()` helper — `B`/`KiB`/`MiB` human-readable formatting.
+- **Fixed** bug: tree renderer initially produced empty visual tree when all root-level files were filtered by `max_files` — subdirectories were never entered because `render_dir()` only recursed via children. Fixed by collecting intermediate directory paths and inserting synthetic entries into parent dirs.
+- **Design insight**: pi-searxng's MCP tool wrapper strips file contents and tells the AI to use `read` tool to explore files. wa CLI lacks a follow-up read tool, so the `--tree-only` flag bridges the gap — one invocation to see the layout, another `wa git` without `--tree-only` (or future `--files` flag) to get specific contents. Default behavior (full content dump) preserved for backward compatibility.
+
+### Step 11 — Metadata header labelled fields ✅
+- 70 tests pass, 2 ignored, 0 fails.
+- **Changed** compact metadata header from positional `·` separation to labelled fields: `> url:example.com · site:GitHub · author:Jane · date:2024-01-15 · type:article · 173 words`.
+- **Rationale**: positional `·` delimiters (e.g., `> GitHub · github · 173 words`) required the LLM to infer field meaning from casing and context — strong models manage, weak models confuse. Explicit labels (`url:`, `site:`, `author:`, `date:`, `type:`) eliminate ambiguity at minimal token cost (~5 tokens per field).
+- **Added** URL as the first labelled field (without `https://` prefix) — the target URL was previously invisible in compact mode when `site_name` differed from domain (e.g., `site:` showed "GitHub" but the actual `github.com/octocat/hello-world` path was lost).
+- **Added** `site:` deduplication — skipped when `site_name` equals the bare domain (avoids `url:example.com · site:example.com` redundancy).
+- **Design insight**: labels are more important for AI agents than token savings. A confused LLM costs far more tokens in re-asks and hallucinations than the ~20 tokens labels consume.
+
+### Step 12 — Browser command ✅
+- 70 tests pass, 2 ignored, 0 fails.
+- **Added** `wa browser` command — fetches rendered HTML from a browser-backed endpoint (e.g., a headless Chrome service at `http://localhost:8000/html?url=...`). Designed for pages that need JS rendering: SPAs, React apps, Cloudflare JS challenges, lazy-loaded content.
+- **Added** `browser_endpoint` field to `Config` (default: `http://localhost:8000/html?url=`) with `WA_BROWSER_ENDPOINT` env var override.
+- **Added** `fetch_browser_html()` helper in `wa-cli` — HTTP GET to endpoint, URL-encodes the target URL, returns rendered HTML.
+- **Added** re-exports `webclaw_core::extract` and `webclaw_core::extract_with_options` in `wa-extract` — enables extraction from raw HTML without going through `FetchClient`.
+- **Added** `reqwest` dependency to `wa-cli` Cargo.toml (already in workspace for `wa-search`).
+- **Command flags**: `--browser-endpoint` (override config), `--no-meta`, `--include`, `--exclude`, `--only-main-content`, `--include-raw-html` — same extraction options as `wa fetch`.
+- **Design insight**: no new crate for browser — the browser endpoint is a simple HTTP GET, and extraction reuses the existing `webclaw_core` pipeline via clean re-exports in `wa-extract`. Creating a `wa-browser` crate for ~10 lines of HTTP logic would violate the "no over-engineering" principle.
+- **Design insight**: `wa browser` and `wa fetch` share the same extraction pipeline and output formats. The only difference is the HTML source: `wa fetch` uses webclaw-fetch's TLS-fingerprinted HTTP stack; `wa browser` delegates rendering to an external service. This layering means any extraction improvements benefit both commands automatically.
 
 ## 19. Implementation insights & gotchas
 

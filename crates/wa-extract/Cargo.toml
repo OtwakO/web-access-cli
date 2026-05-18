@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 wa-core = { workspace = true }
 webclaw-fetch = { workspace = true }
-webclaw-core = { git = "https://github.com/0xMassi/webclaw", rev = "923445f" }
+webclaw-core = { git = "https://github.com/0xMassi/webclaw", rev = "3fabdc1" }
 
 [dev-dependencies]
 wiremock = { workspace = true }

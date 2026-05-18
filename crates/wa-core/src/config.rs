@@ -176,15 +176,26 @@ impl Config {
     /// Resolves `$XDG_CONFIG_HOME/wa/config.toml`, falling back to
     /// `$HOME/.config/wa/config.toml`.
     pub fn default_config_path() -> Option<PathBuf> {
-        let base = std::env::var("XDG_CONFIG_HOME")
-            .ok()
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var("HOME")
-                    .ok()
-                    .map(|h| PathBuf::from(h).join(".config"))
-            })?;
-        Some(base.join("wa").join("config.toml"))
+        #[cfg(target_os = "windows")]
+        {
+            let base = dirs::home_dir()?;
+            Some(base.join(".web-access").join("config.toml"))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let base = std::env::var("XDG_CONFIG_HOME")
+                .ok()
+                .map(PathBuf::from)
+                .or_else(|| {
+                    std::env::var("HOME")
+                        .ok()
+                        .map(|h| PathBuf::from(h).join(".config"))
+                })
+                .or_else(|| {
+                    dirs::config_dir()
+                })?;
+            Some(base.join("wa").join("config.toml"))
+        }
     }
 
     /// Resolve the effective config file path: explicit argument wins,
@@ -205,7 +216,7 @@ impl Config {
             Some(p) => p.to_path_buf(),
             None => Self::default_config_path().ok_or_else(|| {
                 crate::error::WaError::Config(
-                    "could not determine config path (HOME not set)".into(),
+                    "could not determine config directory".into(),
                 )
             })?,
         };

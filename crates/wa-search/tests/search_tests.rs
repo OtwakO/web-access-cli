@@ -213,7 +213,7 @@ async fn test_result_limit() {
 
 #[tokio::test]
 async fn test_empty_query() {
-    let client = SearXNGClient::new("http://localhost:8080".into());
+    let client = SearXNGClient::new("https://cc-searxng.airplane-scala.ts.net".into());
     let err = client.search("", 10).await.unwrap_err();
     assert!(format!("{}", err).contains("empty query"));
 }
