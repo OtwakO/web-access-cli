@@ -196,6 +196,7 @@ enum OutputFormatArg {
     Llm,
     Text,
     Json,
+    Raw,
 }
 
 impl From<OutputFormatArg> for OutputFormat {
@@ -205,6 +206,7 @@ impl From<OutputFormatArg> for OutputFormat {
             OutputFormatArg::Llm => OutputFormat::Llm,
             OutputFormatArg::Text => OutputFormat::Text,
             OutputFormatArg::Json => OutputFormat::Json,
+            OutputFormatArg::Raw => OutputFormat::Raw,
         }
     }
 }
@@ -669,6 +671,13 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             let client = wa_search::SearXNGClient::new(searxng);
+
+            if fmt == OutputFormat::Raw {
+                let raw_json = client.search_raw(&query_str).await?;
+                write_output(&raw_json, output_file.as_deref())?;
+                return Ok(());
+            }
+
             let results = client.search(&query_str, limit).await?;
 
             if results.is_empty() {
@@ -784,6 +793,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     OutputFormat::Json => {
                         format_search_fetch_json(&results, &extracted)
                     }
+                    OutputFormat::Raw => unreachable!(),
                 };
 
                 write_output(&output, output_file.as_deref())?;
@@ -799,6 +809,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             .join("\n")
                     }
                     OutputFormat::Json => format_search_json(&results),
+                    OutputFormat::Raw => unreachable!(),
                     OutputFormat::Llm => {
                         format_search_markdown(&results) // LLM format for search without fetch = markdown
                     }
@@ -856,18 +867,22 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 if !quiet {
                     eprintln!("Fetching: {}", urls[0]);
                 }
-                let result = extractor
-                    .fetch_and_extract(&urls[0], &options)
-                    .await
-                    .map_err(|e| format!("{}", e))?;
+                if fmt == OutputFormat::Raw {
+                    let html = extractor.fetch_raw(&urls[0]).await.map_err(|e| format!("{}", e))?;
+                    write_output(&html, output_file.as_deref())?;
+                } else {
+                    let result = extractor
+                        .fetch_and_extract(&urls[0], &options)
+                        .await
+                        .map_err(|e| format!("{}", e))?;
 
-                let output = match fmt {
-                    OutputFormat::Markdown => format_extract_markdown(&result, &urls[0], !no_meta),
-                    OutputFormat::Llm => format_extract_llm(&result, &urls[0]),
-                    OutputFormat::Text => format_extract_text(&result),
-                    OutputFormat::Json => {
-                        let ext_result = wa_extract::BatchExtractResult {
-                            url: urls[0].clone(),
+                    let output = match fmt {
+                        OutputFormat::Markdown => format_extract_markdown(&result, &urls[0], !no_meta),
+                        OutputFormat::Llm => format_extract_llm(&result, &urls[0]),
+                        OutputFormat::Text => format_extract_text(&result),
+                        OutputFormat::Json => {
+                            let ext_result = wa_extract::BatchExtractResult {
+                                url: urls[0].clone(),
                             result: Ok(result),
                         };
                         format_search_fetch_json(
@@ -879,23 +894,37 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             &[ext_result],
                         )
                     }
+                    OutputFormat::Raw => unreachable!(),
                 };
                 write_output(&output, output_file.as_deref())?;
-            } else {
-                if !quiet {
-                    eprintln!(
-                        "Fetching {} URLs (concurrency: {})...",
-                        urls.len(),
-                        concurrency_resolved
-                    );
                 }
+            } else {
+                if fmt == OutputFormat::Raw {
+                    let mut out = String::new();
+                    for url in &urls {
+                        match extractor.fetch_raw(url).await {
+                            Ok(html) => out.push_str(&html),
+                            Err(e) => {
+                                out.push_str(&format!("<!-- Error for {}: {} -->\n", url, e));
+                            }
+                        }
+                    }
+                    write_output(&out, output_file.as_deref())?;
+                } else {
+                    if !quiet {
+                        eprintln!(
+                            "Fetching {} URLs (concurrency: {})...",
+                            urls.len(),
+                            concurrency_resolved
+                        );
+                    }
 
-                let url_refs: Vec<&str> = urls.iter().map(|u| u.as_str()).collect();
-                let results = extractor
-                    .fetch_batch(&url_refs, concurrency_resolved, &options)
-                    .await;
+                    let url_refs: Vec<&str> = urls.iter().map(|u| u.as_str()).collect();
+                    let results = extractor
+                        .fetch_batch(&url_refs, concurrency_resolved, &options)
+                        .await;
 
-                let output = match fmt {
+                    let output = match fmt {
                     OutputFormat::Markdown => {
                         let mut out = String::new();
                         for r in &results {
@@ -949,8 +978,10 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             .collect();
                         format_search_fetch_json(&search_results, &results)
                     }
+                    OutputFormat::Raw => unreachable!(),
                 };
                 write_output(&output, output_file.as_deref())?;
+                }
             }
 
             if !quiet {
@@ -991,48 +1022,65 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("Browser fetching: {}", urls[0]);
                 }
                 let html = fetch_browser_html(&client, &endpoint, &urls[0]).await?;
-                let result = wa_extract::extract_with_options(&html, Some(&urls[0]), &options)
-                    .map_err(|e| format!("extraction failed: {}", e))?;
+                if fmt == OutputFormat::Raw {
+                    write_output(&html, output_file.as_deref())?;
+                } else {
+                    let result = wa_extract::extract_with_options(&html, Some(&urls[0]), &options)
+                        .map_err(|e| format!("extraction failed: {}", e))?;
 
-                let output = match fmt {
-                    OutputFormat::Markdown => format_extract_markdown(&result, &urls[0], !no_meta),
-                    OutputFormat::Llm => format_extract_llm(&result, &urls[0]),
-                    OutputFormat::Text => format_extract_text(&result),
-                    OutputFormat::Json => {
-                        let ext_result = wa_extract::BatchExtractResult {
-                            url: urls[0].clone(),
-                            result: Ok(result),
-                        };
-                        format_search_fetch_json(
-                            &[wa_core::types::SearchResult {
-                                title: String::new(),
+                    let output = match fmt {
+                        OutputFormat::Markdown => format_extract_markdown(&result, &urls[0], !no_meta),
+                        OutputFormat::Llm => format_extract_llm(&result, &urls[0]),
+                        OutputFormat::Text => format_extract_text(&result),
+                        OutputFormat::Json => {
+                            let ext_result = wa_extract::BatchExtractResult {
+                                url: urls[0].clone(),
+                                result: Ok(result),
+                            };
+                            format_search_fetch_json(
+                                &[wa_core::types::SearchResult {
+                                    title: String::new(),
                                 url: urls[0].clone(),
                                 snippet: String::new(),
                             }],
                             &[ext_result],
                         )
                     }
+                    OutputFormat::Raw => unreachable!(),
                 };
                 write_output(&output, output_file.as_deref())?;
+                }
             } else {
-                if !quiet {
-                    eprintln!("Browser fetching {} URLs...", urls.len());
-                }
-                let mut results: Vec<wa_extract::BatchExtractResult> = Vec::new();
-                for url in &urls {
-                    let result = match fetch_browser_html(&client, &endpoint, url).await {
-                        Ok(html) => wa_extract::extract_with_options(&html, Some(url), &options)
-                            .map_err(|e| format!("extraction failed: {}", e)),
-                        Err(e) => Err(format!("{}", e)),
-                    };
-                    results.push(wa_extract::BatchExtractResult {
-                        url: url.clone(),
-                        result: result.map_err(|e| wa_core::error::WaError::Fetch {
+                if fmt == OutputFormat::Raw {
+                    let mut out = String::new();
+                    for url in &urls {
+                        match fetch_browser_html(&client, &endpoint, url).await {
+                            Ok(html) => out.push_str(&html),
+                            Err(e) => {
+                                out.push_str(&format!("<!-- Error for {}: {} -->\n", url, e));
+                            }
+                        }
+                    }
+                    write_output(&out, output_file.as_deref())?;
+                } else {
+                    if !quiet {
+                        eprintln!("Browser fetching {} URLs...", urls.len());
+                    }
+                    let mut results: Vec<wa_extract::BatchExtractResult> = Vec::new();
+                    for url in &urls {
+                        let result = match fetch_browser_html(&client, &endpoint, url).await {
+                            Ok(html) => wa_extract::extract_with_options(&html, Some(url), &options)
+                                .map_err(|e| format!("extraction failed: {}", e)),
+                            Err(e) => Err(format!("{}", e)),
+                        };
+                        results.push(wa_extract::BatchExtractResult {
                             url: url.clone(),
-                            detail: e,
-                        }),
-                    });
-                }
+                            result: result.map_err(|e| wa_core::error::WaError::Fetch {
+                                url: url.clone(),
+                                detail: e,
+                            }),
+                        });
+                    }
 
                 let search_results: Vec<wa_core::types::SearchResult> = urls
                     .iter()
@@ -1101,8 +1149,10 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         parts.join("\n\n")
                     }
                     OutputFormat::Json => format_search_fetch_json(&search_results, &results),
+                    OutputFormat::Raw => unreachable!(),
                 };
                 write_output(&output, output_file.as_deref())?;
+                }
             }
         }
 
@@ -1152,6 +1202,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     // Same as markdown for git
                     format_git_markdown(&repo)
                 }
+                OutputFormat::Raw => format_git_markdown(&repo),
             };
 
             write_output(&output, output_file.as_deref())?;

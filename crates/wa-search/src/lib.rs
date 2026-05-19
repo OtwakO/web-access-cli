@@ -108,6 +108,48 @@ impl SearXNGClient {
         Ok(results)
     }
 
+    /// Execute a search and return the raw JSON response body.
+    ///
+    /// This skips parsing and deduplication, returning exactly what
+    /// SearXNG sent back. Useful for `--format raw` or piping to jq.
+    /// Error handling (429, timeout, connection refused) is identical
+    /// to `search()`.
+    pub async fn search_raw(&self, query: &str) -> Result<String, WaError> {
+        if query.trim().is_empty() {
+            return Err(WaError::Search("empty query".into()));
+        }
+
+        let url = self.build_search_url(query);
+        let resp = self.client.get(&url).send().await.map_err(|e| {
+            if e.is_timeout() {
+                WaError::Search("request timed out".into())
+            } else if e.is_connect() {
+                WaError::Search(format!("connection refused: {}", e))
+            } else {
+                WaError::Search(format!("request failed: {}", e))
+            }
+        })?;
+
+        let status = resp.status();
+
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(WaError::RateLimit(
+                "SearXNG rate limited".into(),
+            ));
+        }
+
+        if !status.is_success() {
+            return Err(WaError::Search(format!(
+                "HTTP {} from SearXNG",
+                status.as_u16()
+            )));
+        }
+
+        resp.text().await.map_err(|e| {
+            WaError::Search(format!("failed to read response body: {}", e))
+        })
+    }
+
     /// Check whether the SearXNG instance is reachable.
     pub async fn health_check(&self) -> Result<(), WaError> {
         let url = format!("{}/search?q=test&format=json", self.instance_url);

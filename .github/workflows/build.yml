@@ -14,40 +14,34 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────
-  # Linux — statically linked musl binary
+  # Linux — x86_64 glibc binary
   # ─────────────────────────────────────────────
   build-linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-musl
-
-      - name: Install musl linker
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "linux-musl"
+          shared-key: "linux-gnu"
 
       - name: Build release binary
-        run: cargo build --release --target x86_64-unknown-linux-musl
+        run: cargo build --release
 
       - name: Strip debug symbols
-        run: strip target/x86_64-unknown-linux-musl/release/wa
+        run: strip target/release/wa
 
       - name: Compress binary
         run: |
           mkdir -p dist
-          tar czf dist/wa-linux-x86_64.tar.gz \
-            -C target/x86_64-unknown-linux-musl/release wa
+          tar czf dist/wa-linux-x86_64.tar.gz -C target/release wa
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wa-linux-x86_64
           path: dist/wa-linux-x86_64.tar.gz
@@ -58,7 +52,7 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -80,7 +74,7 @@ jobs:
           Compress-Archive -Path target\release\wa.exe -DestinationPath dist\wa-windows-x86_64.zip
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wa-windows-x86_64
           path: dist/wa-windows-x86_64.zip
@@ -92,7 +86,7 @@ jobs:
   build-macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -117,13 +111,13 @@ jobs:
           tar czf dist/wa-macos-aarch64.tar.gz -C target/aarch64-apple-darwin/release wa
 
       - name: Upload Intel artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wa-macos-x86_64
           path: dist/wa-macos-x86_64.tar.gz
 
       - name: Upload ARM artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wa-macos-aarch64
           path: dist/wa-macos-aarch64.tar.gz
@@ -139,7 +133,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           path: artifacts
           merge-multiple: false

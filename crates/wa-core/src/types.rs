@@ -51,4 +51,5 @@ pub enum OutputFormat {
     Llm,
     Text,
     Json,
+    Raw,
 }
