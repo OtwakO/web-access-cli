@@ -221,6 +221,9 @@ fn format_search_markdown(results: &[wa_core::types::SearchResult]) -> String {
     for (i, r) in results.iter().enumerate() {
         out.push_str(&format!("{}. **{}**\n", i + 1, r.title));
         out.push_str(&format!("   {}\n", r.url));
+        if let Some(ref img) = r.img_src {
+            out.push_str(&format!("   Image: {}\n", img));
+        }
         if !r.snippet.is_empty() {
             out.push_str(&format!("   > {}\n", r.snippet));
         }
@@ -804,7 +807,13 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     OutputFormat::Text => {
                         results
                             .iter()
-                            .map(|r| format!("{} — {}", r.title, r.url))
+                            .map(|r| {
+                                let mut line = format!("{} — {}", r.title, r.url);
+                                if let Some(ref img) = r.img_src {
+                                    line.push_str(&format!(" — Image: {}", img));
+                                }
+                                line
+                            })
                             .collect::<Vec<_>>()
                             .join("\n")
                     }
@@ -890,6 +899,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                                 title: String::new(),
                                 url: urls[0].clone(),
                                 snippet: String::new(),
+                                img_src: None,
                             }],
                             &[ext_result],
                         )
@@ -974,6 +984,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                                 title: String::new(),
                                 url: r.url.clone(),
                                 snippet: String::new(),
+                                img_src: None,
                             })
                             .collect();
                         format_search_fetch_json(&search_results, &results)
@@ -1042,6 +1053,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                                     title: String::new(),
                                 url: urls[0].clone(),
                                 snippet: String::new(),
+                                img_src: None,
                             }],
                             &[ext_result],
                         )
@@ -1088,6 +1100,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         title: String::new(),
                         url: u.clone(),
                         snippet: String::new(),
+                        img_src: None,
                     })
                     .collect();
 

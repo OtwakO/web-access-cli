@@ -10,6 +10,7 @@ fn search_result_json_roundtrip() {
         title: "Rust async book".into(),
         url: "https://rust-lang.org/async-book".into(),
         snippet: "An introduction to async programming in Rust.".into(),
+        img_src: None,
     };
     let json = serde_json::to_string(&sr).unwrap();
     let back: SearchResult = serde_json::from_str(&json).unwrap();

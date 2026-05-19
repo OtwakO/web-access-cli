@@ -6,6 +6,8 @@ pub struct SearchResult {
     pub title: String,
     pub url: String,
     pub snippet: String,
+    /// Image URL, only populated when the result category is "images".
+    pub img_src: Option<String>,
 }
 
 /// A text file extracted from a cloned git repository.

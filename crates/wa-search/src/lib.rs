@@ -101,6 +101,11 @@ impl SearXNGClient {
                 title: r.title,
                 url: r.url,
                 snippet: r.content.unwrap_or_default(),
+                img_src: if r.category == "images" {
+                    r.img_src.filter(|s| !s.is_empty())
+                } else {
+                    None
+                },
             })
             .take(limit)
             .collect();
@@ -168,6 +173,10 @@ impl SearXNGClient {
 }
 
 /// URL-encode a query string for use in a SearXNG request.
+fn default_category() -> String {
+    "general".into()
+}
+
 fn urlencoding(s: &str) -> String {
     // We only encode the values that would break the query string:
     // spaces become +, and special characters get percent-encoded.
@@ -202,4 +211,9 @@ struct SearXNGResultItem {
     content: Option<String>,
     #[serde(rename = "snippet")]
     _snippet: Option<String>,
+    /// Result category, e.g. "general", "images", "news".
+    #[serde(default = "default_category")]
+    category: String,
+    /// Image URL (usually only present for image-category results).
+    img_src: Option<String>,
 }
