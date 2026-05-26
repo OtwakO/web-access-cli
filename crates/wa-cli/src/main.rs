@@ -79,6 +79,10 @@ enum Commands {
         /// Omit the compact metadata header from fetched results
         #[arg(long)]
         no_meta: bool,
+
+        /// Include JSON-LD structured data appendix in markdown/llm output
+        #[arg(long)]
+        include_structured_data: bool,
     },
 
     /// Fetch and extract content from URLs
@@ -122,6 +126,10 @@ enum Commands {
         /// Include raw HTML in the result
         #[arg(long)]
         include_raw_html: bool,
+
+        /// Include JSON-LD structured data appendix in markdown/llm output
+        #[arg(long)]
+        include_structured_data: bool,
     },
 
     /// Clone a git repository and list text files
@@ -186,6 +194,10 @@ enum Commands {
         /// Include raw HTML in the result
         #[arg(long)]
         include_raw_html: bool,
+
+        /// Include JSON-LD structured data appendix in markdown/llm output
+        #[arg(long)]
+        include_structured_data: bool,
     },
 }
 
