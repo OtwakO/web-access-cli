@@ -303,11 +303,11 @@ fn format_search_fetch_json(
 /// The body markdown from webclaw-core already has the H1 title and inline links.
 /// A compact metadata header is prepended by default (opt-out with `--no-meta`),
 /// giving AI agents instant context: domain, author, date, type, and word count.
-/// Structured Data (JSON-LD) is appended for enrichment.
 fn format_extract_markdown(
     result: &wa_extract::ExtractionResult,
     url: &str,
     show_meta: bool,
+    include_structured_data: bool,
 ) -> String {
     let mut out = String::new();
 
@@ -318,7 +318,7 @@ fn format_extract_markdown(
 
     out.push_str(&result.content.markdown);
 
-    if !result.structured_data.is_empty() {
+    if include_structured_data && !result.structured_data.is_empty() {
         out.push_str("\n\n## Structured Data\n\n```json\n");
         out.push_str(
             &serde_json::to_string_pretty(&result.structured_data).unwrap_or_default(),
@@ -439,8 +439,18 @@ fn remove_markdown_images(text: &str) -> String {
 }
 
 /// Format extraction result as LLM-optimized text.
-fn format_extract_llm(result: &wa_extract::ExtractionResult, url: &str) -> String {
-    wa_extract::to_llm_text(result, Some(url))
+fn format_extract_llm(
+    result: &wa_extract::ExtractionResult,
+    url: &str,
+    include_structured_data: bool,
+) -> String {
+    let text = wa_extract::to_llm_text(result, Some(url));
+    if !include_structured_data {
+        if let Some(idx) = text.rfind("\n\n## Structured Data\n\n```json\n") {
+            return text[..idx].trim().to_string();
+        }
+    }
+    text
 }
 
 /// Format git clone result as markdown (tree-only mode).
