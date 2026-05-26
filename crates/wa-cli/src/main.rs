@@ -678,6 +678,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             proxy,
             cookies,
             no_meta,
+            include_structured_data,
         } => {
             let query_str = query.join(" ");
             if query_str.trim().is_empty() {
@@ -759,7 +760,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(ext) = extracted.get(i) {
                                 match &ext.result {
                                     Ok(er) => {
-                                        out.push_str(&format_extract_markdown(er, &r.url, !no_meta));
+                                        out.push_str(&format_extract_markdown(er, &r.url, !no_meta, include_structured_data));
                                     }
                                     Err(e) => {
                                         out.push_str(&format!(
@@ -782,7 +783,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(ext) = extracted.get(i) {
                                 match &ext.result {
                                     Ok(er) => {
-                                        out.push_str(&format_extract_llm(er, &r.url));
+                                        out.push_str(&format_extract_llm(er, &r.url, include_structured_data));
                                     }
                                     Err(e) => {
                                         out.push_str(&format!(
@@ -865,6 +866,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             exclude,
             only_main_content,
             include_raw_html,
+            include_structured_data,
         } => {
             let cfg = wa_core::config::Config::load(config_arg)?;
             let browser_resolved = browser.unwrap_or(cfg.browser_profile);
@@ -908,8 +910,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         .map_err(|e| format!("{}", e))?;
 
                     let output = match fmt {
-                        OutputFormat::Markdown => format_extract_markdown(&result, &urls[0], !no_meta),
-                        OutputFormat::Llm => format_extract_llm(&result, &urls[0]),
+                        OutputFormat::Markdown => format_extract_markdown(&result, &urls[0], !no_meta, include_structured_data),
+                        OutputFormat::Llm => format_extract_llm(&result, &urls[0], include_structured_data),
                         OutputFormat::Text => format_extract_text(&result),
                         OutputFormat::Json => {
                             let ext_result = wa_extract::BatchExtractResult {
@@ -981,7 +983,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         for r in &results {
                             match &r.result {
                                 Ok(er) => {
-                                    out.push_str(&format_extract_llm(er, &r.url));
+                                    out.push_str(&format_extract_llm(er, &r.url, include_structured_data));
                                 }
                                 Err(e) => {
                                     out.push_str(&format!("> Error: {}\n\n", e));
@@ -1030,6 +1032,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             exclude,
             only_main_content,
             include_raw_html,
+            include_structured_data,
         } => {
             let cfg = wa_core::config::Config::load(config_arg)?;
             let endpoint = browser_endpoint.unwrap_or(cfg.browser_endpoint);
@@ -1062,8 +1065,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         .map_err(|e| format!("extraction failed: {}", e))?;
 
                     let output = match fmt {
-                        OutputFormat::Markdown => format_extract_markdown(&result, &urls[0], !no_meta),
-                        OutputFormat::Llm => format_extract_llm(&result, &urls[0]),
+                        OutputFormat::Markdown => format_extract_markdown(&result, &urls[0], !no_meta, include_structured_data),
+                        OutputFormat::Llm => format_extract_llm(&result, &urls[0], include_structured_data),
                         OutputFormat::Text => format_extract_text(&result),
                         OutputFormat::Json => {
                             let ext_result = wa_extract::BatchExtractResult {
@@ -1141,7 +1144,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                                         out.push('\n');
                                     }
                                     out.push_str(&er.content.markdown);
-                                    if !er.structured_data.is_empty() {
+                                    if include_structured_data && !er.structured_data.is_empty() {
                                         out.push_str("\n\n## Structured Data\n\n```json\n");
                                         out.push_str(
                                             &serde_json::to_string_pretty(&er.structured_data)
@@ -1163,7 +1166,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         for r in &results {
                             match &r.result {
                                 Ok(er) => {
-                                    out.push_str(&format_extract_llm(er, &r.url));
+                                    out.push_str(&format_extract_llm(er, &r.url, include_structured_data));
                                     out.push('\n');
                                 }
                                 Err(e) => {
