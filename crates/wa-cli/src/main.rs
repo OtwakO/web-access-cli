@@ -524,6 +524,79 @@ fn bracket_links_in_llm_body(llm_text: &str) -> String {
     bracketed + footer
 }
 
+/// Strip known tracking query parameters from a URL.
+///
+/// Removes `utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, and
+/// `utm_term` while preserving all other parameters, fragments, and the
+/// base URL. If no query remains after stripping, the `?` is dropped.
+fn clean_url(url: &str) -> String {
+    let Some(query_start) = url.find('?') else {
+        return url.to_string();
+    };
+
+    let base = &url[..query_start];
+    let query = &url[query_start + 1..];
+
+    // Preserve fragment identifier if present in the query portion.
+    let (query, fragment) = match query.find('#') {
+        Some(hash) => (&query[..hash], &query[hash..]),
+        None => (query, ""),
+    };
+
+    const TRACKING: &[&str] = &[
+        "utm_source", "utm_medium", "utm_campaign",
+        "utm_content", "utm_term", "ref",
+    ];
+
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|pair| {
+            let key = pair.split('=').next().unwrap_or("");
+            !TRACKING.contains(&key)
+        })
+        .collect();
+
+    if kept.is_empty() {
+        format!("{}{}", base, fragment)
+    } else {
+        format!("{}?{}{}", base, kept.join("&"), fragment)
+    }
+}
+
+/// Clean tracking parameters from URLs in the `## Links` footer of LLM text.
+fn clean_links_footer_urls(llm_text: &str) -> String {
+    let Some(links_start) = llm_text.find("\n\n## Links\n") else {
+        return llm_text.to_string();
+    };
+
+    let before = &llm_text[..links_start];
+    let footer = &llm_text[links_start..];
+
+    // Find where Structured Data section starts (if any) so we don't touch it.
+    let sd_start = footer.find("\n\n## Structured Data\n");
+    let (links_section, after_links) = match sd_start {
+        Some(pos) => (&footer[..pos], &footer[pos..]),
+        None => (footer, ""),
+    };
+
+    let cleaned_links = links_section
+        .lines()
+        .map(|line| {
+            if let Some(rest) = line.strip_prefix("- ") {
+                if let Some(colon_pos) = rest.find(": ") {
+                    let label = &rest[..colon_pos];
+                    let url = &rest[colon_pos + 2..];
+                    return format!("- {}: {}", label, clean_url(url));
+                }
+            }
+            line.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!("{before}{cleaned_links}{after_links}")
+}
+
 /// Format extraction result as LLM-optimized text.
 fn format_extract_llm(
     result: &wa_extract::ExtractionResult,
@@ -532,6 +605,7 @@ fn format_extract_llm(
 ) -> String {
     let text = wa_extract::to_llm_text(result, Some(url));
     let text = bracket_links_in_llm_body(&text);
+    let text = clean_links_footer_urls(&text);
     if !include_structured_data {
         if let Some(idx) = text.rfind("\n\n## Structured Data\n\n```json\n") {
             return text[..idx].trim().to_string();
@@ -1458,5 +1532,63 @@ mod tests {
         assert!(result.contains("> Title: Self-Host Weekly"));
         // Body text SHOULD be bracketed
         assert!(result.contains("[Self-Host Weekly] today"));
+    }
+
+    // -----------------------------------------------------------------------
+    // URL cleaning tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn clean_url_strips_utm_params() {
+        let dirty = "https://example.com/?utm_source=newsletter&utm_medium=email&utm_campaign=spring";
+        assert_eq!(clean_url(dirty), "https://example.com/");
+    }
+
+    #[test]
+    fn clean_url_preserves_non_tracking_params() {
+        let dirty = "https://example.com/?page=2&utm_source=feed&id=42";
+        assert_eq!(clean_url(dirty), "https://example.com/?page=2&id=42");
+    }
+
+    #[test]
+    fn clean_url_no_query_unchanged() {
+        let clean = "https://example.com/article";
+        assert_eq!(clean_url(clean), clean);
+    }
+
+    #[test]
+    fn clean_url_preserves_fragment() {
+        let dirty = "https://example.com/?utm_source=x#section-3";
+        assert_eq!(clean_url(dirty), "https://example.com/#section-3");
+    }
+
+    #[test]
+    fn clean_url_empty_query_after_stripping() {
+        let dirty = "https://example.com/?utm_source=x";
+        assert_eq!(clean_url(dirty), "https://example.com/");
+    }
+
+    #[test]
+    fn clean_links_footer_urls_cleans_all_links() {
+        let input = "Body text.\n\n## Links\n- Example: https://a.com?utm_source=x\n- Other: https://b.com?utm_medium=y&page=1\n";
+        let result = clean_links_footer_urls(input);
+        assert!(result.contains("https://a.com"));
+        assert!(!result.contains("utm_source"));
+        assert!(result.contains("https://b.com?page=1"));
+        assert!(!result.contains("utm_medium"));
+    }
+
+    #[test]
+    fn clean_links_footer_preserves_structured_data() {
+        let input = "## Links\n- Example: https://a.com?utm_source=x\n\n## Structured Data\n```json\n{}\n```";
+        let result = clean_links_footer_urls(input);
+        assert!(result.contains("## Structured Data"));
+        assert!(result.contains("```json"));
+    }
+
+    #[test]
+    fn clean_links_footer_no_links_section_unchanged() {
+        let input = "Just body text with no footer.";
+        assert_eq!(clean_links_footer_urls(input), input);
     }
 }
