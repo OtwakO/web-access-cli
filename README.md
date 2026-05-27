@@ -11,7 +11,12 @@ Rust CLI giving AI agents four web capabilities:
 
 All extraction uses webclaw-core (95.1% extraction accuracy, 29+ vertical extractors)
 rather than Readability. Output formats: **markdown** (default), `--format llm`
-(token-optimised), `text`, or `json`.
+(token-optimised for LLM consumption), `text`, or `json`.
+
+**Recent improvements:** `--format llm` now preserves `[link text]` brackets in the
+body (so the LLM knows which text was originally hyperlinked) and strips tracking
+parameters (`utm_*`, `ref`) from footer URLs. Structured data (JSON-LD) is now
+**opt-in** via `--include-structured-data` for markdown and llm formats.
 
 ## Quick Start
 
@@ -116,6 +121,7 @@ wa search "rust async" --limit 20
 | `--proxy <url>` | config | SOCKS/HTTP proxy |
 | `--no-meta` | off | Omit metadata header from extracted pages |
 | `--cookie "k=v"` | none | Cookies (repeatable) |
+| `--include-structured-data` | off | Append JSON-LD structured data appendix |
 
 *Note: all named flags must appear before the query text.*
 
@@ -147,6 +153,7 @@ wa fetch https://example.com --include-raw-html
 | `--exclude <selector>` | none | CSS selectors to strip (repeatable) |
 | `--only-main-content` | off | Auto-detect and extract main content only |
 | `--include-raw-html` | off | Attach raw HTML to result (JSON format) |
+| `--include-structured-data` | off | Append JSON-LD structured data appendix |
 
 ### `wa browser` — Browser-Backed Fetch
 
@@ -170,6 +177,7 @@ wa browser https://spa.example.com --browser-endpoint "http://localhost:8000/htm
 | `--exclude <selector>` | none | CSS selectors to strip (repeatable) |
 | `--only-main-content` | off | Auto-detect main content |
 | `--include-raw-html` | off | Attach raw HTML to result (JSON format) |
+| `--include-structured-data` | off | Append JSON-LD structured data appendix |
 
 *`wa browser` and `wa fetch` share the same extraction pipeline — only the
 HTML source differs.*
@@ -223,14 +231,24 @@ All commands support `--format <fmt>` with four formats:
 
 ### Markdown (`--format markdown`) — default
 
-Clean markdown with content, inline links, and structured data (when available).
+Clean markdown with content, inline links, and optional metadata header.
 Multi-result outputs separated by `---`.
+
+**Note:** JSON-LD structured data is **not** appended by default. Use
+`--include-structured-data` to append a `## Structured Data` block with
+schema.org metadata.
 
 ### LLM (`--format llm`)
 
-Token-optimised for LLM consumption: deduplicated paragraphs, collapsed
-whitespace, links moved to `## Links` footer, images stripped, structured data
-as JSON code block. Based on webclaw-core's `to_llm_text()`.
+Token-optimised for LLM consumption, with `wa`-specific post-processing on top
+of webclaw-core's `to_llm_text()`:
+
+- **Deduplicated paragraphs**, collapsed whitespace, images stripped
+- **Link text preserved in body** as `[label]` brackets — the LLM knows which
+  text was originally a hyperlink without reading the full URL
+- **Tracking parameters stripped** from `## Links` footer URLs (`utm_source`,
+  `utm_medium`, `utm_campaign`, `utm_content`, `utm_term`, `ref`)
+- **Structured data appendix** only included when `--include-structured-data` is passed
 
 ### Text (`--format text`)
 

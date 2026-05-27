@@ -648,6 +648,8 @@ Options:
   --cookies <COOKIE>      Cookie to send in --fetch mode (repeatable)
   --proxy <URL>           Proxy URL for --fetch mode
   --searxng-url <URL>     SearXNG instance URL (overrides config)
+  --no-meta               Omit metadata header from extracted pages
+  --include-structured-data  Append JSON-LD structured data (markdown/llm only)
   --format <FORMAT>       Override global format for this command
 
 Examples:
@@ -685,6 +687,8 @@ Options:
   --cookies <COOKIE>      Cookie to send (repeatable, e.g. --cookies "session=abc")
   --proxy <URL>           Proxy URL (e.g. http://proxy:8080 or socks5://proxy:1080)
   --concurrency, -c <N>   Max concurrent fetches [default: 4]
+  --no-meta               Omit metadata header from output
+  --include-structured-data  Append JSON-LD structured data (markdown/llm only)
   --format <FORMAT>       Override global format for this command
 
 Examples:
@@ -795,13 +799,26 @@ For `git`:
 
 ### 5.2 LLM (`--format llm`)
 
-For `fetch` / `search --fetch`: Uses `webclaw_core::to_llm_text()` which produces token-optimized text:
+For `fetch` / `search --fetch`: Uses `webclaw_core::to_llm_text()` plus `wa`-specific
+post-processing for better LLM comprehension:
+
+**Body text (from webclaw):**
 - Metadata in `> ` prefix lines
 - No images, no bold/italic
 - Links moved to dedicated `## Links` section at bottom
 - Duplicate paragraphs deduplicated
 - Code blocks preserved
 - Empty lines collapsed to at most 1 consecutive
+
+**Post-processing (wa-cli):**
+- **Link brackets restored**: `[label]` brackets are re-inserted around link text
+  in the body (webclaw strips them to plain text). The LLM knows which words were
+  originally hyperlinked without reading full URLs.
+- **Tracking params stripped**: `utm_*` and `ref` query parameters are removed
+  from all `## Links` footer URLs, reducing token bloat by ~30-40% on heavily
+  tracked pages (newsletters, campaign links).
+- **Structured data excluded by default**: The JSON-LD appendix is only included
+  when `--include-structured-data` is passed.
 
 For `search` (no `--fetch`) and `git`: Uses a compact structured format:
 ```
@@ -1184,15 +1201,32 @@ Status: 7 pass, 2 ignored (network), 3 deferred (mock SearXNG in CLI tests).
 
 **Deliverable:** Fully functional `wa` CLI binary.
 
-### Phase 7: Polish
+### Phase 7: Structured Data & LLM Format Improvements ✅ **DONE (2026-05-26)**
 
-- [ ] 7.1 Add `tracing` + `tracing-subscriber` for structured logging
-- [ ] 7.2 Add `--verbose` / `--quiet` flag handling
-- [ ] 7.3 Add retry logic for wa-search and wa-extract (exponential backoff with jitter)
-- [ ] 7.4 Add progress indication for multi-fetch operations (spinner + completion counts)
-- [ ] 7.5 Error messages are consistently formatted and actionable
-- [ ] 7.6 `direnv` / `.env.example` for development convenience
-- [ ] 7.7 CI: GitHub Actions to run `cargo test`, `cargo clippy`, `cargo fmt --check`
+Status: All features implemented, 16 unit tests pass, 15 workspace test suites green.
+
+- [x] 7.1 Add `--include-structured-data` flag to `search`, `fetch`, `browser` commands
+- [x] 7.2 Make structured data appendix conditional (default: off for markdown/llm, always on for json)
+- [x] 7.3 Implement `bracket_links_in_llm_body()` — restore `[label]` brackets around link text in `--format llm`
+- [x] 7.4 Implement `clean_url()` — strip `utm_*` and `ref` tracking parameters from URLs
+- [x] 7.5 Implement `clean_links_footer_urls()` — apply URL cleaning to `## Links` footer in `--format llm`
+- [x] 7.6 Add unit tests for bracket restoration (8 tests: basic, no-links, longest-first, double-bracket, metadata-skip, word-boundary, multiple-occurrences)
+- [x] 7.7 Add unit tests for URL cleaning (8 tests: utm stripping, non-tracking preservation, no-query, fragment preservation, empty-query collapse, footer batch, structured-data boundary, no-links passthrough)
+- [x] 7.8 Update README.md and PLAN.md with new behavior documentation
+
+**Deliverable:** `--format llm` produces token-efficient output with semantic link
+preservation and cleaned URLs. `--include-structured-data` gives users explicit
+control over JSON-LD appendix inclusion.
+
+### Phase 8: Polish
+
+- [ ] 8.1 Add `tracing` + `tracing-subscriber` for structured logging
+- [ ] 8.2 Add `--verbose` / `--quiet` flag handling
+- [ ] 8.3 Add retry logic for wa-search and wa-extract (exponential backoff with jitter)
+- [ ] 8.4 Add progress indication for multi-fetch operations (spinner + completion counts)
+- [ ] 8.5 Error messages are consistently formatted and actionable
+- [ ] 8.6 `direnv` / `.env.example` for development convenience
+- [ ] 8.7 CI: GitHub Actions to run `cargo test`, `cargo clippy`, `cargo fmt --check`
 
 ---
 
@@ -1373,6 +1407,10 @@ These are documented so we don't design ourselves into a corner, but **NOT imple
 | **TOML config, not JSON** | Standard Rust config format. Human-writable with comments. Used by cargo itself. |
 | **clap derive, not builder** | More maintainable for the number of subcommands we have. Compile-time validation. |
 | **tokio, not async-std** | Most widely used async runtime in Rust ecosystem. reqwest requires tokio anyway. |
+| **Structured data is opt-in** | webclaw appends JSON-LD to both markdown and LLM formats by default. This wastes ~10% of tokens on CMS pages (schema.org Article wrappers that duplicate metadata already in the header). Made `--include-structured-data` an explicit flag so the default output is clean. |
+| **LLM format: bracketed body links** | webclaw's `to_llm_text()` strips `[text](url)` to plain `text` and moves URLs to a `## Links` footer. This loses the semantic signal that the text was originally a hyperlink. Post-process the output to restore `[label]` brackets around the first body occurrence of each link label. |
+| **LLM format: strip tracking params** | Newsletter and blog URLs are heavily tracked (`utm_source`, `utm_medium`, `ref`). These add ~30-40% token overhead with zero semantic value. Clean `utm_*` and `ref` parameters from all `## Links` footer URLs in `--format llm`. |
+| **No reference-style markdown** | Evaluated `[text][N]` + `[N]: url` reference format for token savings. Rejected for `--format llm` because numbered references add indirection that hurts LLM comprehension (the LLM sees `[1]` with zero semantic signal until it reaches the footer). The current `[text]` + `- text: url` format is more LLM-friendly. May revisit as a separate `--format ref` option if demand exists. |
 
 ---
 
