@@ -13,6 +13,7 @@ wa-core = { path = "crates/wa-core" }
 wa-search = { path = "crates/wa-search" }
 wa-extract = { path = "crates/wa-extract" }
 wa-git = { path = "crates/wa-git" }
+wa-crawl = { path = "crates/wa-crawl" }
 
 # Shared dependencies
 serde = { version = "1", features = ["derive"] }

@@ -1,0 +1,23 @@
+[package]
+name = "wa-crawl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wa-core = { workspace = true }
+wa-extract = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+futures = "0.3"
+scraper = "0.22"
+quick-xml = { version = "0.37", features = ["serialize"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+wiremock = { workspace = true }

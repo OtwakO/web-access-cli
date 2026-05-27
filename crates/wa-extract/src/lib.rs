@@ -60,6 +60,7 @@ impl BrowserProfile {
 ///
 /// Holds an `Arc<FetchClient>` so it can be shared across tasks
 /// for concurrent batch fetches.
+#[derive(Clone)]
 pub struct Extractor {
     client: Arc<webclaw_fetch::FetchClient>,
 }
