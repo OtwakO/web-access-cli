@@ -306,13 +306,14 @@ fn format_search_fetch_json(
 fn format_extract_markdown(
     result: &wa_extract::ExtractionResult,
     url: &str,
+    fetched_url: Option<&str>,
     show_meta: bool,
     include_structured_data: bool,
 ) -> String {
     let mut out = String::new();
 
     if show_meta {
-        out.push_str(&format_compact_meta(result, url));
+        out.push_str(&format_compact_meta(result, url, fetched_url));
         out.push('\n');
     }
 
@@ -339,7 +340,11 @@ fn format_extract_markdown(
 /// `site` is omitted when it duplicates the bare domain. Null/empty fields are
 /// skipped. The line is always `> `-prefixed (blockquote) so it doesn't
 /// interfere with the body markdown.
-fn format_compact_meta(result: &wa_extract::ExtractionResult, url: &str) -> String {
+fn format_compact_meta(
+    result: &wa_extract::ExtractionResult,
+    url: &str,
+    fetched_url: Option<&str>,
+) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     // URL — always first, strip protocol for compactness
@@ -348,6 +353,17 @@ fn format_compact_meta(result: &wa_extract::ExtractionResult, url: &str) -> Stri
         .or_else(|| url.strip_prefix("http://"))
         .unwrap_or(url);
     parts.push(format!("url:{url_clean}"));
+
+    // Fetched URL — only when rewritten to a different host
+    if let Some(fetched) = fetched_url {
+        let fetched_clean = fetched
+            .strip_prefix("https://")
+            .or_else(|| fetched.strip_prefix("http://"))
+            .unwrap_or(fetched);
+        if fetched_clean != url_clean {
+            parts.push(format!("fetched_url:{fetched_clean}"));
+        }
+    }
 
     // Site name — only if it adds information beyond the bare domain
     if let Some(ref site_name) = result.metadata.site_name {
@@ -597,15 +613,49 @@ fn clean_links_footer_urls(llm_text: &str) -> String {
     format!("{before}{cleaned_links}{after_links}")
 }
 
+/// Post-process LLM text to inject `fetched_url` into the metadata header
+/// when the URL was rewritten. The metadata line starts with `> URL:`.
+fn inject_fetched_url_into_llm(text: &str, fetched_url: Option<&str>) -> String {
+    let Some(fetched) = fetched_url else { return text.to_string(); };
+    let Some(url_line_start) = text.find("> URL:") else {
+        return text.to_string();
+    };
+    let line_end = text[url_line_start..].find('\n').map(|i| url_line_start + i).unwrap_or(text.len());
+    let url_line = &text[url_line_start..line_end];
+
+    // Extract the original URL from the line to avoid duplicate injection
+    let url_prefix = "> URL: ";
+    let original_in_line = &url_line[url_prefix.len()..];
+    let original_url = original_in_line.split(" ·").next().unwrap_or(original_in_line);
+
+    let fetched_clean = fetched
+        .strip_prefix("https://")
+        .or_else(|| fetched.strip_prefix("http://"))
+        .unwrap_or(fetched);
+
+    if fetched_clean == original_url {
+        return text.to_string();
+    }
+
+    let new_line = format!("{url_prefix}{original_url} · fetched_url:{fetched_clean}");
+    let mut out = String::with_capacity(text.len() + 30);
+    out.push_str(&text[..url_line_start]);
+    out.push_str(&new_line);
+    out.push_str(&text[line_end..]);
+    out
+}
+
 /// Format extraction result as LLM-optimized text.
 fn format_extract_llm(
     result: &wa_extract::ExtractionResult,
     url: &str,
+    fetched_url: Option<&str>,
     include_structured_data: bool,
 ) -> String {
     let text = wa_extract::to_llm_text(result, Some(url));
     let text = bracket_links_in_llm_body(&text);
     let text = clean_links_footer_urls(&text);
+    let text = inject_fetched_url_into_llm(&text, fetched_url);
     if !include_structured_data {
         if let Some(idx) = text.rfind("\n\n## Structured Data\n\n```json\n") {
             return text[..idx].trim().to_string();
@@ -848,6 +898,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
             // Load config (file + env), then apply CLI overrides
             let cfg = wa_core::config::Config::load(config_arg)?;
+            let rewriter = wa_core::url_rewrite::UrlRewriter::new(&cfg.url_rewrites)
+                .map_err(|e| format!("{}", e))?;
             let searxng = searxng_url.unwrap_or(cfg.searxng_url);
             let browser_resolved = browser.unwrap_or(cfg.browser_profile);
             let proxy_resolved = proxy.or(cfg.proxy);
@@ -921,7 +973,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(ext) = extracted.get(i) {
                                 match &ext.result {
                                     Ok(er) => {
-                                        out.push_str(&format_extract_markdown(er, &r.url, !no_meta, include_structured_data));
+                                        let fetched = rewriter.apply(&r.url);
+                                        out.push_str(&format_extract_markdown(er, &r.url, fetched.as_deref(), !no_meta, include_structured_data));
                                     }
                                     Err(e) => {
                                         out.push_str(&format!(
@@ -944,7 +997,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(ext) = extracted.get(i) {
                                 match &ext.result {
                                     Ok(er) => {
-                                        out.push_str(&format_extract_llm(er, &r.url, include_structured_data));
+                                        let fetched = rewriter.apply(&r.url);
+                                        out.push_str(&format_extract_llm(er, &r.url, fetched.as_deref(), include_structured_data));
                                     }
                                     Err(e) => {
                                         out.push_str(&format!(
@@ -1030,6 +1084,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             include_structured_data,
         } => {
             let cfg = wa_core::config::Config::load(config_arg)?;
+            let rewriter = wa_core::url_rewrite::UrlRewriter::new(&cfg.url_rewrites)
+                .map_err(|e| format!("{}", e))?;
             let browser_resolved = browser.unwrap_or(cfg.browser_profile);
             let proxy_resolved = proxy.or(cfg.proxy);
             let concurrency_resolved = concurrency.unwrap_or(4);
@@ -1071,8 +1127,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         .map_err(|e| format!("{}", e))?;
 
                     let output = match fmt {
-                        OutputFormat::Markdown => format_extract_markdown(&result, &urls[0], !no_meta, include_structured_data),
-                        OutputFormat::Llm => format_extract_llm(&result, &urls[0], include_structured_data),
+                        OutputFormat::Markdown => format_extract_markdown(&result, &urls[0], rewriter.apply(&urls[0]).as_deref(), !no_meta, include_structured_data),
+                        OutputFormat::Llm => format_extract_llm(&result, &urls[0], rewriter.apply(&urls[0]).as_deref(), include_structured_data),
                         OutputFormat::Text => format_extract_text(&result),
                         OutputFormat::Json => {
                             let ext_result = wa_extract::BatchExtractResult {
@@ -1144,7 +1200,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         for r in &results {
                             match &r.result {
                                 Ok(er) => {
-                                    out.push_str(&format_extract_llm(er, &r.url, include_structured_data));
+                                    let fetched = rewriter.apply(&r.url);
+                                    out.push_str(&format_extract_llm(er, &r.url, fetched.as_deref(), include_structured_data));
                                 }
                                 Err(e) => {
                                     out.push_str(&format!("> Error: {}\n\n", e));
@@ -1196,6 +1253,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             include_structured_data,
         } => {
             let cfg = wa_core::config::Config::load(config_arg)?;
+            let rewriter = wa_core::url_rewrite::UrlRewriter::new(&cfg.url_rewrites)
+                .map_err(|e| format!("{}", e))?;
             let endpoint = browser_endpoint.unwrap_or(cfg.browser_endpoint);
 
             let mut options = wa_extract::ExtractionOptions::default();
@@ -1226,8 +1285,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         .map_err(|e| format!("extraction failed: {}", e))?;
 
                     let output = match fmt {
-                        OutputFormat::Markdown => format_extract_markdown(&result, &urls[0], !no_meta, include_structured_data),
-                        OutputFormat::Llm => format_extract_llm(&result, &urls[0], include_structured_data),
+                        OutputFormat::Markdown => format_extract_markdown(&result, &urls[0], rewriter.apply(&urls[0]).as_deref(), !no_meta, include_structured_data),
+                        OutputFormat::Llm => format_extract_llm(&result, &urls[0], rewriter.apply(&urls[0]).as_deref(), include_structured_data),
                         OutputFormat::Text => format_extract_text(&result),
                         OutputFormat::Json => {
                             let ext_result = wa_extract::BatchExtractResult {
@@ -1301,7 +1360,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                                 Ok(er) => {
                                     out.push_str(&format!("## {}\n\n", r.url));
                                     if !no_meta {
-                                        out.push_str(&format_compact_meta(er, &r.url));
+                                        let fetched = rewriter.apply(&r.url);
+                                        out.push_str(&format_compact_meta(er, &r.url, fetched.as_deref()));
                                         out.push('\n');
                                     }
                                     out.push_str(&er.content.markdown);
@@ -1327,7 +1387,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         for r in &results {
                             match &r.result {
                                 Ok(er) => {
-                                    out.push_str(&format_extract_llm(er, &r.url, include_structured_data));
+                                    let fetched = rewriter.apply(&r.url);
+                                    out.push_str(&format_extract_llm(er, &r.url, fetched.as_deref(), include_structured_data));
                                     out.push('\n');
                                 }
                                 Err(e) => {

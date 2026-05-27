@@ -3041,6 +3041,7 @@ name = "wa-core"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "regex",
  "serde",
  "serde_json",
  "temp-env",

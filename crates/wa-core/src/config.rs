@@ -98,6 +98,12 @@ pub struct Config {
     /// with ±25 % jitter).
     #[serde(default = "default_retry_delay_ms")]
     pub retry_delay_ms: u64,
+
+    /// Ordered list of URL rewrite rules. Applied before every HTTP
+    /// fetch; first match wins. If no rule matches, the original URL
+    /// is used unchanged.
+    #[serde(default)]
+    pub url_rewrites: Vec<crate::url_rewrite::UrlRewriteRule>,
 }
 
 impl Default for Config {
@@ -112,6 +118,7 @@ impl Default for Config {
             browser_endpoint: default_browser_endpoint(),
             retries: default_retries(),
             retry_delay_ms: default_retry_delay_ms(),
+            url_rewrites: Vec::new(),
         }
     }
 }
@@ -262,6 +269,7 @@ impl Config {
         self.browser_endpoint = file_cfg.browser_endpoint;
         self.retries = file_cfg.retries;
         self.retry_delay_ms = file_cfg.retry_delay_ms;
+        self.url_rewrites = file_cfg.url_rewrites;
     }
 
     /// Override fields from `WA_*` environment variables.
@@ -318,4 +326,19 @@ const CONFIG_TEMPLATE: &str = r##"# wa configuration
 
 # Max text files to read from a cloned repo
 # max_files = 100
+
+# URL rewrite rules — applied before every HTTP fetch.
+# First match wins. Use Rust regex syntax; $1, $2… are capture groups.
+#
+# [[url_rewrites]]
+# match_regex = '^https?://www\\.reddit\\.com/(.*)$'
+# replace = 'https://old.reddit.com/$1'
+#
+# [[url_rewrites]]
+# match_regex = '^https?://(www\\.)?medium\\.com/(.*)$'
+# replace = 'https://scribe.rip/$2'
+#
+# [[url_rewrites]]
+# match_regex = '^https?://twitter\\.com/'
+# replace = 'https://nitter.net/'
 "##;
