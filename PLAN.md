@@ -1218,15 +1218,35 @@ Status: All features implemented, 16 unit tests pass, 15 workspace test suites g
 preservation and cleaned URLs. `--include-structured-data` gives users explicit
 control over JSON-LD appendix inclusion.
 
-### Phase 8: Polish
+### Phase 8: URL Rewrite / Redirect System ✅ **DONE (2026-05-26)**
 
-- [ ] 8.1 Add `tracing` + `tracing-subscriber` for structured logging
-- [ ] 8.2 Add `--verbose` / `--quiet` flag handling
-- [ ] 8.3 Add retry logic for wa-search and wa-extract (exponential backoff with jitter)
-- [ ] 8.4 Add progress indication for multi-fetch operations (spinner + completion counts)
-- [ ] 8.5 Error messages are consistently formatted and actionable
-- [ ] 8.6 `direnv` / `.env.example` for development convenience
-- [ ] 8.7 CI: GitHub Actions to run `cargo test`, `cargo clippy`, `cargo fmt --check`
+Status: All features implemented, 80 tests pass across 15 workspace test suites.
+
+- [x] 8.1 Add `wa-core::url_rewrite` module with `UrlRewriteRule` + `UrlRewriter`
+- [x] 8.2 Implement regex compilation with clear error messages (rule index included)
+- [x] 8.3 Add `url_rewrites: Vec<UrlRewriteRule>` to `Config` with TOML array-of-tables support
+- [x] 8.4 Update `overlay_file()` and `CONFIG_TEMPLATE` with commented examples
+- [x] 8.5 Wire rewriter into `wa-cli` — create after `Config::load`, apply before every fetch
+- [x] 8.6 Update `format_compact_meta` to show `fetched_url` when rewritten
+- [x] 8.7 Add `inject_fetched_url_into_llm()` post-processor for `--format llm` metadata
+- [x] 8.8 Apply rewrites in all fetch paths: `search --fetch`, `fetch`, `browser` (single + batch)
+- [x] 8.9 Add 6 unit tests in `wa-core::url_rewrite` (match, no-match, first-wins, captures, invalid-regex, empty-rules, preserve-fragment)
+- [x] 8.10 Update README.md with comprehensive URL rewrite documentation (config format, examples, recipes)
+- [x] 8.11 Update PLAN.md with design decision records
+
+**Deliverable:** Transparent regex-based URL rewriting with ordered rule evaluation,
+capture-group expansion, and full output transparency (both original and rewritten
+URLs visible in metadata headers).
+
+### Phase 9: Polish
+
+- [ ] 9.1 Add `tracing` + `tracing-subscriber` for structured logging
+- [ ] 9.2 Add `--verbose` / `--quiet` flag handling
+- [ ] 9.3 Add retry logic for wa-search and wa-extract (exponential backoff with jitter)
+- [ ] 9.4 Add progress indication for multi-fetch operations (spinner + completion counts)
+- [ ] 9.5 Error messages are consistently formatted and actionable
+- [ ] 9.6 `direnv` / `.env.example` for development convenience
+- [ ] 9.7 CI: GitHub Actions to run `cargo test`, `cargo clippy`, `cargo fmt --check`
 
 ---
 
@@ -1411,6 +1431,9 @@ These are documented so we don't design ourselves into a corner, but **NOT imple
 | **LLM format: bracketed body links** | webclaw's `to_llm_text()` strips `[text](url)` to plain `text` and moves URLs to a `## Links` footer. This loses the semantic signal that the text was originally a hyperlink. Post-process the output to restore `[label]` brackets around the first body occurrence of each link label. |
 | **LLM format: strip tracking params** | Newsletter and blog URLs are heavily tracked (`utm_source`, `utm_medium`, `ref`). These add ~30-40% token overhead with zero semantic value. Clean `utm_*` and `ref` parameters from all `## Links` footer URLs in `--format llm`. |
 | **No reference-style markdown** | Evaluated `[text][N]` + `[N]: url` reference format for token savings. Rejected for `--format llm` because numbered references add indirection that hurts LLM comprehension (the LLM sees `[1]` with zero semantic signal until it reaches the footer). The current `[text]` + `- text: url` format is more LLM-friendly. May revisit as a separate `--format ref` option if demand exists. |
+| **URL rewrite in config, not CLI flag** | Rewrite rules are multi-field structures (regex + replacement) that don't map well to simple CLI flags. TOML array-of-tables (`[[url_rewrites]]`) is the right format. Rules are compiled at startup so invalid regexes fail fast with clear error messages including the rule index. |
+| **First-match-wins ordering** | Rules are evaluated in config order. This gives users explicit control over precedence (e.g. put specific rules before broad ones). Same semantics as ketch's urlrewrite package. |
+| **fetched_url in metadata, not body** | When a URL is rewritten, both original and rewritten URLs are shown in the compact metadata header (`> url:... · fetched_url:...`). This keeps the body clean while providing full transparency. The LLM can see where content actually came from without token-bloating the article text. |
 
 ---
 
