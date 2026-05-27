@@ -199,6 +199,53 @@ enum Commands {
         #[arg(long)]
         include_structured_data: bool,
     },
+
+    /// Crawl a website starting from a seed URL (BFS or sitemap)
+    Crawl {
+        /// Seed URL to start crawling from
+        #[arg(required = true)]
+        url: String,
+
+        /// Max BFS depth (0 = seed only)
+        #[arg(long, default_value = "3")]
+        depth: usize,
+
+        /// Number of concurrent fetch workers
+        #[arg(long, default_value = "4")]
+        concurrency: usize,
+
+        /// Path substrings that URLs must contain (repeatable)
+        #[arg(long)]
+        allow: Vec<String>,
+
+        /// Regex patterns to reject URLs (repeatable)
+        #[arg(long)]
+        deny: Vec<String>,
+
+        /// Treat seed URL as an XML sitemap instead of BFS seed
+        #[arg(long)]
+        sitemap: bool,
+
+        /// Browser profile: chrome, firefox, safari-ios, random
+        #[arg(long)]
+        browser: Option<String>,
+
+        /// Proxy URL
+        #[arg(long)]
+        proxy: Option<String>,
+
+        /// Cookies as "name=value" (can be repeated)
+        #[arg(long = "cookie")]
+        cookies: Vec<String>,
+
+        /// Omit the compact metadata header from output
+        #[arg(long)]
+        no_meta: bool,
+
+        /// Include JSON-LD structured data appendix in markdown/llm output
+        #[arg(long)]
+        include_structured_data: bool,
+    },
 }
 
 /// CLI-level output format that converts to wa_core::OutputFormat.
@@ -1414,6 +1461,107 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 write_output(&output, output_file.as_deref())?;
                 }
             }
+        }
+
+        Commands::Crawl {
+            url: seed,
+            depth,
+            concurrency,
+            allow,
+            deny,
+            sitemap,
+            browser,
+            proxy,
+            cookies,
+            no_meta,
+            include_structured_data,
+        } => {
+            let cfg = wa_core::config::Config::load(config_arg)?;
+            let (extractor, rewriter) = wa_crawl::build_extractor_from_config(&cfg, browser, proxy, Some(cookies))?;
+
+            let deny_regexps: Vec<regex::Regex> = deny
+                .iter()
+                .map(|p| regex::Regex::new(p).map_err(|e| format!("invalid deny pattern '{}': {}", p, e)))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let opts = wa_crawl::CrawlOptions {
+                depth,
+                concurrency,
+                allow,
+                deny: deny_regexps,
+                sitemap,
+            };
+
+            let crawler = wa_crawl::Crawler::new(extractor, rewriter, opts);
+
+            if !quiet {
+                eprintln!("Crawling: {}", seed);
+            }
+
+            let results = crawler.crawl(&seed).await?;
+
+            if !quiet {
+                eprintln!("Crawled {} pages.", results.len());
+            }
+
+            let output = match fmt {
+                OutputFormat::Markdown => {
+                    let mut out = String::new();
+                    for (i, r) in results.iter().enumerate() {
+                        if i > 0 {
+                            out.push_str("\n---\n\n");
+                        }
+                        if !no_meta {
+                            out.push_str(&format_compact_meta(&r.extraction, &r.url, r.fetched_url.as_deref()));
+                            out.push('\n');
+                        }
+                        out.push_str(&r.extraction.content.markdown);
+                        if include_structured_data && !r.extraction.structured_data.is_empty() {
+                            out.push_str("\n\n## Structured Data\n\n```json\n");
+                            out.push_str(
+                                &serde_json::to_string_pretty(&r.extraction.structured_data)
+                                    .unwrap_or_default(),
+                            );
+                            out.push_str("\n```");
+                        }
+                        out.push('\n');
+                    }
+                    out
+                }
+                OutputFormat::Llm => {
+                    let mut out = String::new();
+                    for r in &results {
+                        out.push_str(&format_extract_llm(
+                            &r.extraction,
+                            &r.url,
+                            r.fetched_url.as_deref(),
+                            include_structured_data,
+                        ));
+                        out.push('\n');
+                    }
+                    out
+                }
+                OutputFormat::Text => {
+                    results.iter().map(|r| format_extract_text(&r.extraction)).collect::<Vec<_>>().join("\n\n")
+                }
+                OutputFormat::Json => {
+                    let items: Vec<serde_json::Value> = results.iter().map(|r| {
+                        serde_json::json!({
+                            "url": r.url,
+                            "fetched_url": r.fetched_url,
+                            "depth": r.depth,
+                            "source": format!("{:?}", r.source).to_lowercase(),
+                            "title": r.extraction.metadata.title,
+                            "markdown": r.extraction.content.markdown,
+                            "plain_text": r.extraction.content.plain_text,
+                            "word_count": r.extraction.metadata.word_count,
+                        })
+                    }).collect();
+                    serde_json::to_string_pretty(&items).unwrap_or_else(|_| "[]".into())
+                }
+                OutputFormat::Raw => unreachable!(),
+            };
+            write_output(&output, output_file.as_deref())?;
         }
 
         Commands::Git {

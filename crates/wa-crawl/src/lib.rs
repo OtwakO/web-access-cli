@@ -5,6 +5,7 @@
 //! depth. Supports both BFS link discovery and XML sitemap parsing.
 
 pub mod crawler;
+pub use crawler::Crawler;
 pub mod link_extract;
 pub mod sitemap;
 
@@ -75,12 +76,12 @@ pub fn build_extractor_from_config(
     browser: Option<String>,
     proxy: Option<String>,
     cookies: Option<Vec<String>>,
-) -> Result<(Extractor, UrlRewriter), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(Extractor, UrlRewriter), wa_core::error::WaError> {
     let profile_str = browser.unwrap_or_else(|| cfg.browser_profile.clone());
-    let profile = wa_extract::BrowserProfile::try_from_str(&profile_str)?;
+    let profile = wa_extract::BrowserProfile::try_from_str(&profile_str)
+        .map_err(|e| wa_core::error::WaError::Config(format!("invalid browser profile: {e}")))?;
     let proxy_resolved = proxy.or_else(|| cfg.proxy.clone());
     let extractor = Extractor::new(profile, proxy_resolved, cookies, cfg.fetch_timeout_secs as u64);
-    let rewriter = UrlRewriter::new(&cfg.url_rewrites)
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+    let rewriter = UrlRewriter::new(&cfg.url_rewrites)?;
     Ok((extractor, rewriter))
 }

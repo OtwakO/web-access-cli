@@ -163,7 +163,7 @@ mod tests {
     fn normalize_url_strips_utm() {
         assert_eq!(
             normalize_url("https://example.com/?utm_source=x&page=2&utm_medium=y"),
-            Some("https://example.com?page=2".into())
+            Some("https://example.com/?page=2".into())
         );
     }
 
