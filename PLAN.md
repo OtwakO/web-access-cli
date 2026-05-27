@@ -1238,15 +1238,37 @@ Status: All features implemented, 80 tests pass across 15 workspace test suites.
 capture-group expansion, and full output transparency (both original and rewritten
 URLs visible in metadata headers).
 
-### Phase 9: Polish
+### Phase 9: Crawl (BFS + Sitemap) ✅ **DONE (2026-05-26)**
 
-- [ ] 9.1 Add `tracing` + `tracing-subscriber` for structured logging
-- [ ] 9.2 Add `--verbose` / `--quiet` flag handling
-- [ ] 9.3 Add retry logic for wa-search and wa-extract (exponential backoff with jitter)
-- [ ] 9.4 Add progress indication for multi-fetch operations (spinner + completion counts)
-- [ ] 9.5 Error messages are consistently formatted and actionable
-- [ ] 9.6 `direnv` / `.env.example` for development convenience
-- [ ] 9.7 CI: GitHub Actions to run `cargo test`, `cargo clippy`, `cargo fmt --check`
+Status: All features implemented, 85 tests pass across 16 workspace test suites.
+
+- [x] 9.1 Create `wa-crawl` crate with modular architecture (crawler, link_extract, sitemap)
+- [x] 9.2 Implement BFS crawler with semaphore-limited concurrent fetching
+- [x] 9.3 Implement link extraction from raw HTML using `scraper` crate
+- [x] 9.4 Implement URL normalization (strip fragments, utm_ params, trailing slashes)
+- [x] 9.5 Implement allow/deny path filtering with regex support
+- [x] 9.6 Implement XML sitemap parser (urlset + sitemapindex with recursion)
+- [x] 9.7 Add in-memory visited-set deduplication
+- [x] 9.8 Apply URL rewrite rules before each fetch
+- [x] 9.9 Wire `wa crawl` command into wa-cli with all format support
+- [x] 9.10 Add CLI flags: --depth, --concurrency, --allow, --deny, --sitemap
+- [x] 9.11 Add 17 unit tests in wa-crawl (link extraction, URL normalization, filtering, sitemap parsing)
+- [x] 9.12 Update README.md with crawl documentation and architecture diagram
+- [x] 9.13 Add Clone derive to wa-extract::Extractor for shared worker usage
+
+**Deliverable:** `wa crawl` command supporting both BFS link discovery and
+XML sitemap crawling, with same-host restriction, configurable depth/concurrency,
+path filtering, and full output format support (markdown, llm, text, json).
+
+### Phase 10: Polish
+
+- [ ] 10.1 Add `tracing` + `tracing-subscriber` for structured logging
+- [ ] 10.2 Add `--verbose` / `--quiet` flag handling
+- [ ] 10.3 Add retry logic for wa-search and wa-extract (exponential backoff with jitter)
+- [ ] 10.4 Add progress indication for multi-fetch operations (spinner + completion counts)
+- [ ] 10.5 Error messages are consistently formatted and actionable
+- [ ] 10.6 `direnv` / `.env.example` for development convenience
+- [ ] 10.7 CI: GitHub Actions to run `cargo test`, `cargo clippy`, `cargo fmt --check`
 
 ---
 
@@ -1297,11 +1319,12 @@ predicates = "3"                  # Assertion combinators for assert_cmd
 
 | Crate | Runtime deps | Dev deps |
 |-------|-------------|----------|
-| **wa-core** | serde, thiserror, url, toml | — |
+| **wa-core** | serde, thiserror, url, toml, regex | — |
 | **wa-search** | wa-core, reqwest, serde_json | wiremock, tokio |
 | **wa-extract** | wa-core, webclaw-fetch | wiremock, tokio |
+| **wa-crawl** | wa-core, wa-extract, tokio, reqwest, url, regex, scraper, quick-xml | wiremock, tokio |
 | **wa-git** | wa-core, tempfile, regex, walkdir | — |
-| **wa-cli** | wa-core, wa-search, wa-extract, wa-git, clap, tokio, tracing, tracing-subscriber | assert_cmd, predicates |
+| **wa-cli** | wa-core, wa-search, wa-extract, wa-crawl, wa-git, clap, tokio, regex, tracing, tracing-subscriber | assert_cmd, predicates |
 
 **webclaw-fetch transitive dependencies** (resolved from git source, AGPL-3.0):
 - `webclaw-core` — pure extraction engine (scraper, ego-tree, url, regex, serde)
@@ -1434,6 +1457,12 @@ These are documented so we don't design ourselves into a corner, but **NOT imple
 | **URL rewrite in config, not CLI flag** | Rewrite rules are multi-field structures (regex + replacement) that don't map well to simple CLI flags. TOML array-of-tables (`[[url_rewrites]]`) is the right format. Rules are compiled at startup so invalid regexes fail fast with clear error messages including the rule index. |
 | **First-match-wins ordering** | Rules are evaluated in config order. This gives users explicit control over precedence (e.g. put specific rules before broad ones). Same semantics as ketch's urlrewrite package. |
 | **fetched_url in metadata, not body** | When a URL is rewritten, both original and rewritten URLs are shown in the compact metadata header (`> url:... · fetched_url:...`). This keeps the body clean while providing full transparency. The LLM can see where content actually came from without token-bloating the article text. |
+| **Crawl in separate wa-crawl crate** | BFS coordination, link extraction, and sitemap parsing are distinct concerns from single-page fetch/extract. A separate crate keeps wa-extract focused on per-page operations and enables reuse (e.g. MCP server could import just wa-crawl). |
+| **Semaphore-limited concurrency, not worker pool** | Go's goroutine + WaitGroup pattern doesn't map cleanly to Rust async. A tokio Semaphore with spawned tasks is simpler: the coordinator owns the BFS queue and visits set, each fetch is an independent task that acquires a permit. No channel backpressure or deadlock risks. |
+| **scraper for link extraction, not lol_html** | `scraper` (CSS selectors on html5ever) is the standard Rust HTML parsing ecosystem. `lol_html` is faster but requires manual state machine for CSS selectors. For just `a[href]`, scraper's simplicity outweighs the performance difference. |
+| **Same-host restriction, no robots.txt** | Same-host restriction prevents crawling the entire internet from a single seed. robots.txt is intentionally ignored — this is an agent tool, not a public crawler, and many sites have overly restrictive robots.txt that blocks legitimate research use. Users are responsible for respectful use. |
+| **In-memory visited set, no persistent cache (v1)** | Persistent caching requires embedded KV (sled/redb) and cache invalidation logic. For v1, a `HashSet<String>` keyed by normalized URL provides deduplication within a single crawl. Persistent caching can be added later without API changes. |
+| **Batch output, not streaming** | All format functions (`format_extract_markdown`, `format_extract_llm`) return `String`. Streaming would require refactoring them to accept `&mut String` or a writer trait. Batch keeps the implementation simple; memory pressure is acceptable for typical crawls (<500 pages). |
 
 ---
 
