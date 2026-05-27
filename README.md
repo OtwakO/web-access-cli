@@ -93,6 +93,79 @@ max_files = 100                              # max text files from git clone
 
 ---
 
+## URL Rewrite Rules
+
+Transparently rewrite request URLs before any fetch. Applied in `wa fetch`,
+`wa browser`, and `wa search --fetch`. Rules are ordered — **first match wins**.
+
+### Config Format
+
+Add `[[url_rewrites]]` tables to `~/.config/wa/config.toml`:
+
+```toml
+[[url_rewrites]]
+match_regex = '^https?://www\.reddit\.com/(.*)$'
+replace = 'https://old.reddit.com/$1'
+
+[[url_rewrites]]
+match_regex = '^https?://(www\.)?medium\.com/(.*)$'
+replace = 'https://scribe.rip/$2'
+
+[[url_rewrites]]
+match_regex = '^https?://twitter\.com/'
+replace = 'https://nitter.net/'
+```
+
+### How It Works
+
+| Original URL | Rule | Rewritten URL |
+|-------------|------|---------------|
+| `https://www.reddit.com/r/rust` | `^https?://www\.reddit\.com/(.*)$` → `https://old.reddit.com/$1` | `https://old.reddit.com/r/rust` |
+| `https://medium.com/@author/post` | `^https?://(www\.)?medium\.com/(.*)$` → `https://scribe.rip/$2` | `https://scribe.rip/@author/post` |
+| `https://twitter.com/elonmusk` | `^https?://twitter\.com/` → `https://nitter.net/` | `https://nitter.net/elonmusk` |
+| `https://github.com/torvalds/linux` | *(no rule matches)* | *(unchanged)* |
+
+### Regex Syntax
+
+- `match_regex` uses **Rust regex syntax** (`regex` crate)
+- `$1`, `$2`, … reference capture groups
+- `^` and `$` anchors are recommended for precise matching
+- Double backslashes in TOML: `\.` matches a literal dot
+
+### Output Transparency
+
+When a rewrite is applied, both URLs are shown in the metadata header:
+
+```markdown
+> url:www.reddit.com/r/rust · fetched_url:old.reddit.com/r/rust · author:... · 14603 words
+```
+
+If no rule matched, only `url:` appears (no extra field).
+
+### Common Recipes
+
+```toml
+# Reddit: old.reddit.com serves clean HTML without JS bot wall
+[[url_rewrites]]
+match_regex = '^https?://www\.reddit\.com/(.*)$'
+replace = 'https://old.reddit.com/$1'
+
+# Medium: scribe.rip is a readability proxy
+[[url_rewrites]]
+match_regex = '^https?://(www\.)?medium\.com/(.*)$'
+replace = 'https://scribe.rip/$2'
+
+# Twitter/X: nitter is a privacy frontend
+[[url_rewrites]]
+match_regex = '^https?://(www\.)?(twitter|x)\.com/'
+replace = 'https://nitter.net/'
+
+# Stack Overflow: mobile site is lighter
+[[url_rewrites]]
+match_regex = '^https?://stackoverflow\.com/questions/(\d+)(/.*)?$'
+replace = 'https://stackoverflow.com/questions/$1'
+```
+
 ## Commands
 
 All commands support global flags: `--quiet`, `--format <fmt>`, `--output PATH`,
