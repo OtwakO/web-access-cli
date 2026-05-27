@@ -7,6 +7,7 @@ Rust CLI giving AI agents four web capabilities:
 | `wa search` | Web search via SearXNG, optional per-result extraction |
 | `wa fetch` | Fetch URL → extract clean content via webclaw |
 | `wa browser` | Fetch via browser-backed rendering endpoint → extract |
+| `wa crawl` | BFS or sitemap crawl a single host, extract all pages |
 | `wa git` | Clone repo → file listing or tree |
 
 All extraction uses webclaw-core (95.1% extraction accuracy, 29+ vertical extractors)
@@ -255,6 +256,49 @@ wa browser https://spa.example.com --browser-endpoint "http://localhost:8000/htm
 *`wa browser` and `wa fetch` share the same extraction pipeline — only the
 HTML source differs.*
 
+### `wa crawl` — Crawl a Website
+
+BFS or sitemap-based crawling with same-host restriction. Extracts content
+from every page discovered.
+
+```bash
+# BFS crawl from a seed URL (depth 3, concurrency 4)
+wa crawl https://example.com
+
+# Limit depth and concurrency
+wa crawl https://example.com --depth 2 --concurrency 8
+
+# Sitemap-based crawl (much faster for large sites)
+wa crawl https://example.com/sitemap.xml --sitemap
+
+# Filter to specific paths only
+wa crawl https://docs.rs --depth 2 --allow "/tokio" --allow "/async"
+
+# Exclude paths by regex
+wa crawl https://example.com --deny ".*admin.*" --deny ".*login.*"
+
+# Output as LLM-optimized text
+wa crawl https://example.com --format llm --output site-content.md
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `URL` | required | Seed URL (or sitemap URL with `--sitemap`) |
+| `--depth` | `3` | Max BFS depth (0 = seed only) |
+| `--concurrency` | `4` | Parallel fetch workers |
+| `--allow` | none | Path substrings URLs must contain (repeatable) |
+| `--deny` | none | Regex patterns to reject URLs (repeatable) |
+| `--sitemap` | off | Treat seed as XML sitemap |
+| `--no-meta` | off | Omit metadata header from each page |
+| `--include-structured-data` | off | Append JSON-LD to each page |
+
+**Behavior:**
+- Only crawls URLs on the **same host** as the seed
+- Discovers links via `<a href>` tags in page HTML
+- Applies URL rewrite rules from config before fetching
+- Deduplicates by normalized URL (strips fragments, `utm_*` params, trailing `/`)
+- Failed pages are silently skipped (other pages still returned)
+
 ### `wa git` — Git Repository
 
 ```bash
@@ -351,9 +395,10 @@ with `status: "error"`.
 
 ```
 wa-cli  (CLI parsing, output formatting)
- ├── wa-core    (config, types, errors — no I/O)
+ ├── wa-core    (config, types, errors, URL rewriter — no I/O)
  ├── wa-search  (SearXNG HTTP client)
  ├── wa-extract (webclaw-fetch wrapper, raw HTML extraction)
+ ├── wa-crawl   (BFS crawler, link extraction, sitemap parser)
  └── wa-git     (git clone + file tree walking)
 ```
 
@@ -362,8 +407,9 @@ Dependency layering:
 ```
 wa-core ← wa-search  (reqwest)
 wa-core ← wa-extract (webclaw-fetch, webclaw-core)
+wa-core ← wa-crawl   (wa-extract, scraper, quick-xml)
 wa-core ← wa-git     (walkdir, git CLI)
-wa-core + wa-search + wa-extract + wa-git → wa-cli
+wa-core + wa-search + wa-extract + wa-crawl + wa-git → wa-cli
 ```
 
 `wa-core` has zero I/O dependencies — portable to WASM.
