@@ -438,6 +438,92 @@ fn remove_markdown_images(text: &str) -> String {
     result
 }
 
+/// Post-process webclaw's LLM text to restore `[label]` brackets around link
+/// text in the body. webclaw's `to_llm_text()` strips `[text](url)` to plain
+/// `text` and appends a `## Links` footer; this keeps the semantic signal
+/// that the text was originally a hyperlink.
+///
+/// This is a best-effort transform: the first occurrence of each link label
+/// in the body is wrapped with brackets, matched as a whole word to avoid
+/// partial replacements. Labels are processed longest-first so a shorter
+/// label does not falsely match inside a longer one.
+fn bracket_links_in_llm_body(llm_text: &str) -> String {
+    // Split the output into body (before Links footer) and footer.
+    let Some(links_start) = llm_text.find("\n\n## Links\n") else {
+        return llm_text.to_string();
+    };
+
+    let body = &llm_text[..links_start];
+    let footer = &llm_text[links_start..];
+
+    // Parse each "- label: url" line from the Links footer.
+    let mut labels: Vec<String> = Vec::new();
+    for line in footer.lines().skip(1) {
+        if let Some(rest) = line.strip_prefix("- ") {
+            if let Some(colon) = rest.find(": ") {
+                labels.push(rest[..colon].to_string());
+            }
+        }
+    }
+
+    if labels.is_empty() {
+        return llm_text.to_string();
+    }
+
+    // Longest labels first: prevents a short label from matching inside
+    // a longer one (e.g. "React" inside "Learn React").
+    labels.sort_by(|a, b| b.len().cmp(&a.len()));
+
+    let mut bracketed = body.to_string();
+    let mut replaced_ranges: Vec<(usize, usize)> = Vec::new();
+
+    'next_label: for label in &labels {
+        let label_bytes = label.as_bytes();
+        let text_bytes = bracketed.as_bytes();
+
+        for (pos, window) in text_bytes.windows(label_bytes.len()).enumerate() {
+            if window != label_bytes {
+                continue;
+            }
+            let end = pos + label_bytes.len();
+
+            // Word-boundary check: not preceded or followed by alphanumeric.
+            let before_ok = pos == 0 || !text_bytes[pos - 1].is_ascii_alphanumeric();
+            let after_ok = end >= text_bytes.len() || !text_bytes[end].is_ascii_alphanumeric();
+            if !before_ok || !after_ok {
+                continue;
+            }
+
+            // Skip if already bracketed: [label].
+            let already_bracketed = pos > 0
+                && text_bytes[pos - 1] == b'['
+                && end < text_bytes.len()
+                && text_bytes[end] == b']';
+            if already_bracketed {
+                continue;
+            }
+
+            // Skip matches inside the metadata header (lines starting with "> ").
+            let line_start = text_bytes[..pos].iter().rposition(|&c| c == b'\n').map(|i| i + 1).unwrap_or(0);
+            if text_bytes.get(line_start) == Some(&b'>') && text_bytes.get(line_start + 1) == Some(&b' ') {
+                continue;
+            }
+
+            // No overlap with already-replaced ranges.
+            let overlaps = replaced_ranges.iter().any(|(s, e)| pos < *e && end > *s);
+            if overlaps {
+                continue;
+            }
+
+            bracketed.replace_range(pos..end, &format!("[{label}]"));
+            replaced_ranges.push((pos, end + 2)); // +2 for "[" and "]"
+            continue 'next_label;
+        }
+    }
+
+    bracketed + footer
+}
+
 /// Format extraction result as LLM-optimized text.
 fn format_extract_llm(
     result: &wa_extract::ExtractionResult,
@@ -445,6 +531,7 @@ fn format_extract_llm(
     include_structured_data: bool,
 ) -> String {
     let text = wa_extract::to_llm_text(result, Some(url));
+    let text = bracket_links_in_llm_body(&text);
     if !include_structured_data {
         if let Some(idx) = text.rfind("\n\n## Structured Data\n\n```json\n") {
             return text[..idx].trim().to_string();
@@ -1301,4 +1388,75 @@ async fn fetch_browser_html(
     resp.text()
         .await
         .map_err(|e| format!("failed to read browser response: {}", e).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bracket_links_restores_body_brackets() {
+        let input = "Check out Last week for more info.\n\n## Links\n- Last week: https://example.com/last-week\n";
+        let expected = "Check out [Last week] for more info.\n\n## Links\n- Last week: https://example.com/last-week\n";
+        assert_eq!(bracket_links_in_llm_body(input), expected);
+    }
+
+    #[test]
+    fn bracket_links_no_links_section_unchanged() {
+        let input = "No links here, just plain text.";
+        assert_eq!(bracket_links_in_llm_body(input), input);
+    }
+
+    #[test]
+    fn bracket_links_longest_first_prevents_partial() {
+        let input = "Read Learn React today.\n\n## Links\n- Learn React: https://react.dev/learn\n- React: https://react.dev\n";
+        let result = bracket_links_in_llm_body(input);
+        // "Learn React" (the longer label) should be bracketed
+        assert!(result.contains("[Learn React]"));
+        // The shorter "React" label should not create a false match
+        // because "Learn React" already occupies that range
+        let learn_react_count = result.matches("[Learn React]").count();
+        assert_eq!(learn_react_count, 1);
+    }
+
+    #[test]
+    fn bracket_links_does_not_double_bracket() {
+        let input = "See [Last week] for details.\n\n## Links\n- Last week: https://example.com\n";
+        assert_eq!(bracket_links_in_llm_body(input), input);
+    }
+
+    #[test]
+    fn bracket_links_preserves_structured_data() {
+        let input = "Check out Example for details.\n\n## Links\n- Example: https://example.com\n\n## Structured Data\n```json\n{\"@type\":\"Article\"}\n```";
+        let result = bracket_links_in_llm_body(input);
+        assert!(result.contains("## Structured Data"));
+        assert!(result.contains("[Example]"));
+    }
+
+    #[test]
+    fn bracket_links_skips_word_boundary_violations() {
+        let input = "The React framework and Preact library.\n\n## Links\n- React: https://react.dev\n";
+        let result = bracket_links_in_llm_body(input);
+        // "React" should be bracketed as a whole word, not inside "Preact"
+        // The first standalone "React" is bracketed
+        assert!(result.contains("[React] framework"));
+    }
+
+    #[test]
+    fn bracket_links_multiple_occurrences_brackets_first_only() {
+        let input = "Last week was good. Last week was busy.\n\n## Links\n- Last week: https://example.com\n";
+        let result = bracket_links_in_llm_body(input);
+        let count = result.matches("[Last week]").count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn bracket_links_skips_metadata_header_lines() {
+        let input = "> Title: Self-Host Weekly\n> URL: https://example.com\n\nRead Self-Host Weekly today.\n\n## Links\n- Self-Host Weekly: https://example.com\n";
+        let result = bracket_links_in_llm_body(input);
+        // Metadata line should NOT be bracketed
+        assert!(result.contains("> Title: Self-Host Weekly"));
+        // Body text SHOULD be bracketed
+        assert!(result.contains("[Self-Host Weekly] today"));
+    }
 }
