@@ -11,14 +11,15 @@
 
 ## 1. Project Overview
 
-**wa** (Web Access) is a Rust CLI that gives AI agents four capabilities:
+**wa** (Web Access) is a Rust CLI that gives AI agents five capabilities:
 
 | # | Command | Description | Fetch Engine | Extract Engine |
 |---|---------|-------------|-------------|----------------|
 | 1 | `wa search` | Web search via SearXNG, optional page extraction | webclaw-fetch (BoringSSL TLS fingerprinting) | webclaw-core (95.1% accuracy) |
 | 2 | `wa fetch` | Fetch URL → extract clean content | webclaw-fetch (BoringSSL TLS fingerprinting) | webclaw-core (95.1% accuracy) |
-| 3 | `wa git` | Clone repo → list text files (`--tree-only` for paths only) | git CLI (shallow clone) | N/A (raw files) |
-| 4 | `wa browser` | Fetch via browser-backed rendering endpoint → extract content | Browser endpoint (HTTP GET) | webclaw-core (95.1% accuracy) |
+| 3 | `wa browser` | Fetch via browser-backed rendering endpoint → extract content | Browser endpoint (HTTP GET) | webclaw-core (95.1% accuracy) |
+| 4 | `wa crawl` | BFS or sitemap crawl a single host, extract all pages | webclaw-fetch (BoringSSL TLS fingerprinting) | webclaw-core (95.1% accuracy) |
+| 5 | `wa git` | Clone repo → list text files (`--tree-only` for paths only) | git CLI (shallow clone) | N/A (raw files) |
 
 **Every page fetched by this tool goes through webclaw's extraction pipeline, not Readability.**
 No garbage in, garbage out. Every output format (markdown, LLM-optimized,
@@ -32,8 +33,9 @@ all in one CLI, one binary, one consistent interface.
 
 **What distinguishes it from webclaw itself:**
 - **SearXNG, not proprietary search** — self-hosted, privacy-respecting, no API key
+- **Crawling** — BFS and sitemap-based multi-page extraction that webclaw doesn't provide
 - **Git cloning** — webclaw doesn't do this at all
-- **Focused scope** — just the three operations AI agents need most, not a 12-tool platform
+- **Focused scope** — just the operations AI agents need most, not a 12-tool platform
 - **CLI-first** — designed for stdin/stdout pipeline consumption
 - **No cloud dependency** — everything runs locally; no WEBCLAW_API_KEY needed
 
@@ -45,13 +47,14 @@ all in one CLI, one binary, one consistent interface.
 web-access-cli/                  ← Workspace root
 ├── Cargo.toml                   ← [workspace], members, shared deps
 ├── crates/                      ← Our original code
-│   ├── wa-core/                 ← Shared types, config, error enums (zero I/O)
-│   │   ├── Cargo.toml           ← deps: serde, thiserror, url
+│   ├── wa-core/                 ← Shared types, config, error enums, URL rewriter (zero I/O)
+│   │   ├── Cargo.toml           ← deps: serde, thiserror, url, toml, regex
 │   │   └── src/
 │   │       ├── lib.rs           ← re-exports
 │   │       ├── types.rs         ← SearchResult, GitRepo, OutputFormat
 │   │       ├── config.rs        ← Config struct + loading (CLI args, env, TOML file)
-│   │       └── error.rs         ← WaError enum
+│   │       ├── error.rs         ← WaError enum
+│   │       └── url_rewrite.rs   ← Regex-based URL rewrite engine
 │   │
 │   ├── wa-search/               ← SearXNG search client (HTTP I/O only)
 │   │   ├── Cargo.toml           ← deps: wa-core, reqwest, serde_json
@@ -65,6 +68,14 @@ web-access-cli/                  ← Workspace root
 │   │       ├── lib.rs           ← re-exports ExtractionResult
 │   │       └── extractor.rs     ← Extractor wraps FetchClient
 │   │
+│   ├── wa-crawl/                ← BFS + sitemap crawler
+│   │   ├── Cargo.toml           ← deps: wa-core, wa-extract, tokio, scraper, quick-xml
+│   │   └── src/
+│   │       ├── lib.rs           ← re-exports CrawlOptions, CrawlResult
+│   │       ├── crawler.rs       ← BFS engine with semaphore concurrency
+│   │       ├── link_extract.rs  ← HTML <a href> extraction + filtering
+│   │       └── sitemap.rs       ← XML sitemap/urlset parser
+│   │
 │   ├── wa-git/                  ← Git repo cloning + file listing
 │   │   ├── Cargo.toml           ← deps: wa-core, tempfile, walkdir, regex
 │   │   └── src/
@@ -72,15 +83,10 @@ web-access-cli/                  ← Workspace root
 │   │       └── cloner.rs        ← GitCloner { .clone_and_list(url, opts) }
 │   │
 │   └── wa-cli/                  ← CLI binary (thin orchestration layer)
-│       ├── Cargo.toml           ← deps: wa-core, wa-search, wa-extract, wa-git, clap, tokio
+│       ├── Cargo.toml           ← deps: wa-core, wa-search, wa-extract, wa-crawl, wa-git, clap, tokio, regex
 │       └── src/
 │           ├── main.rs          ← clap derive + dispatch
-│           ├── commands/
-│           │   ├── mod.rs
-│           │   ├── search.rs    ← search command handler
-│           │   ├── fetch.rs     ← fetch command handler
-│           │   └── git.rs       ← git command handler
-│           └── output.rs        ← output formatter (markdown, llm, text, json)
+│           └── output.rs        ← output formatter (markdown, llm, text, json, raw)
 │
 ├── tests/                       ← Integration tests
 │   ├── cli_search.rs
@@ -102,7 +108,7 @@ web-access-cli/                  ← Workspace root
 
 **Dependency graph (edges = "depends on"):**
 ```
-wa-cli ──────→ wa-search ──────→ wa-core ── serde, thiserror, url
+wa-cli ──────→ wa-search ──────→ wa-core ── serde, thiserror, url, toml, regex
   │               │
   ├───────────→ wa-extract ────→ wa-core
   │               │
@@ -113,9 +119,11 @@ wa-cli ──────→ wa-search ──────→ wa-core ── serd
   │               ├── Reddit JSON fallback, LinkedIn extraction, Akamai cookie warmup
   │               └── 29+ vertical extractors (GitHub, PyPI, npm, Amazon, YouTube, ...)
   │
+  ├───────────→ wa-crawl ──────→ wa-extract, wa-core
+  │
   ├───────────→ wa-git ────────→ wa-core
   │
-  └───────────→ clap, tokio, tracing
+  └───────────→ clap, tokio, tracing, regex
 
 HTML→content seam (clean interface, future-proof):
   Any fetch mechanism ──→ raw HTML ──→ webclaw_core::extract_with_options(html, url, opts)
@@ -126,6 +134,7 @@ HTML→content seam (clean interface, future-proof):
 - **wa-core** is pure data — zero I/O, no network, no filesystem. Can be compiled to WASM.
 - **wa-search** owns SearXNG HTTP (simple JSON API, uses reqwest — no TLS fingerprinting needed).
 - **wa-extract** owns page fetching via webclaw-fetch (BoringSSL TLS fingerprinting, browser profiles, proxy support, bot protection detection, PDF extraction, batch operations).
+- **wa-crawl** owns BFS/sitemap crawling and depends on wa-extract for per-page fetch+extract.
 - **wa-git** owns git cloning + file listing.
 - **wa-cli** is the thin orchestration layer. If we add an MCP server later, it lives alongside wa-cli (or replaces it) without touching any library crate.
 
@@ -224,7 +233,7 @@ pub struct ClonedRepo {
     pub files: Vec<GitFile>,
 }
 
-/// Output format options for fetch and search commands.
+/// Output format options for fetch, search, browser, and crawl commands.
 /// The CLI layer provides clap::ValueEnum separately; this crate is clap-free.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -234,6 +243,7 @@ pub enum OutputFormat {
     Llm,
     Text,
     Json,
+    Raw,
 }
 
 // ======== config.rs ========
@@ -244,64 +254,63 @@ pub enum OutputFormat {
 ///   3. Environment variables (WA_*)
 ///   4. CLI arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
-    /// SearXNG instance URL (e.g. "http://localhost:8080" or "https://searx.example.com")
+    /// SearXNG instance URL (used by `wa search` only).
     #[serde(default = "default_searxng_url")]
     pub searxng_url: String,
 
-    /// Timeout in seconds for SearXNG search requests
-    #[serde(default = "default_timeout")]
-    pub searxng_timeout: u64,
+    /// HTTP fetch timeout in seconds.
+    #[serde(default = "default_fetch_timeout_secs")]
+    pub fetch_timeout_secs: u64,
 
-    /// Maximum number of search results to return
-    #[serde(default = "default_max_results")]
-    pub max_search_results: usize,
-
-    /// Timeout in seconds for URL content fetches
-    #[serde(default = "default_timeout")]
-    pub fetch_timeout: u64,
-
-    /// TLS fingerprint browser profile: "chrome", "firefox", "safari-ios", "random"
-    #[serde(default = "default_browser")]
+    /// TLS fingerprint browser profile: "chrome", "firefox", "safari-ios", or "random".
+    #[serde(default = "default_browser_profile")]
     pub browser_profile: String,
     // Note: browser_profile is a String in Config because wa-core is clap-free and
     // browser-agnostic. wa-extract converts it to BrowserProfile via a pub fn parse()
     // that returns WaError::Config on unrecognized values.
 
-    /// Optional proxy URL for fetch operations
+    /// Optional SOCKS / HTTP proxy URL.
     #[serde(default)]
     pub proxy: Option<String>,
 
-    /// Directory where git repos are cloned (None = system temp dir)
-    pub git_temp_dir: Option<String>,
-
-    /// Maximum file size in bytes to include from cloned repos
+    /// Maximum file size (bytes) to read from a cloned repo.
     #[serde(default = "default_max_file_size")]
-    pub git_max_file_size: usize,
+    pub max_file_size: usize,
 
-    /// Maximum number of files to include from cloned repos
+    /// Maximum number of text files to read from a cloned repo.
     #[serde(default = "default_max_files")]
-    pub git_max_files: usize,
+    pub max_files: usize,
 
-    /// Default output format
-    #[serde(default)]
-    pub output_format: OutputFormat,
+    /// Browser-backed rendering endpoint for `wa browser`
+    /// (e.g. "http://localhost:8000/html?url=").
+    #[serde(default = "default_browser_endpoint")]
+    pub browser_endpoint: String,
 
-    /// Number of retry attempts for transient network failures (fetch/search)
+    /// Number of retries for transient failures (connection refused,
+    /// DNS failure, timeout, HTTP 429, HTTP 503).
     #[serde(default = "default_retries")]
     pub retries: u32,
 
-    /// Base delay between retries in milliseconds
+    /// Base delay between retries in milliseconds (exponential backoff
+    /// with ±25 % jitter).
     #[serde(default = "default_retry_delay_ms")]
     pub retry_delay_ms: u64,
+
+    /// Ordered list of URL rewrite rules. Applied before every HTTP
+    /// fetch; first match wins. If no rule matches, the original URL
+    /// is used unchanged.
+    #[serde(default)]
+    pub url_rewrites: Vec<crate::url_rewrite::UrlRewriteRule>,
 }
 
 fn default_searxng_url() -> String { "http://localhost:8080".into() }
-fn default_timeout() -> u64 { 30 }
-fn default_max_results() -> usize { 10 }
-fn default_browser() -> String { "chrome".into() }
+fn default_fetch_timeout_secs() -> u64 { 12 }
+fn default_browser_profile() -> String { "chrome".into() }
 fn default_max_file_size() -> usize { 102_400 }
 fn default_max_files() -> usize { 100 }
+fn default_browser_endpoint() -> String { "http://localhost:8000/html?url=".into() }
 fn default_retries() -> u32 { 3 }
 fn default_retry_delay_ms() -> u64 { 500 }
 

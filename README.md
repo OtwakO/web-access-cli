@@ -12,7 +12,7 @@ Rust CLI giving AI agents four web capabilities:
 
 All extraction uses webclaw-core (95.1% extraction accuracy, 29+ vertical extractors)
 rather than Readability. Output formats: **markdown** (default), `--format llm`
-(token-optimised for LLM consumption), `text`, or `json`.
+(token-optimised for LLM consumption), `text`, `json`, or `raw`.
 
 **Recent improvements:** `--format llm` now preserves `[link text]` brackets in the
 body (so the LLM knows which text was originally hyperlinked) and strips tracking
@@ -344,7 +344,7 @@ wa config --init --path /path/to/config.toml
 
 ## Output Formats
 
-All commands support `--format <fmt>` with four formats:
+All commands support `--format <fmt>` with five formats:
 
 ### Markdown (`--format markdown`) — default
 
@@ -377,6 +377,12 @@ markdown when extraction provides no plain text.
 Flat JSON schema with all extracted data: metadata, markdown, plain text, links,
 images, code blocks, structured data, and domain type. Errors returned in-band
 with `status: "error"`.
+
+### Raw (`--format raw`)
+
+Return the raw HTTP response body without extraction. For `wa fetch` this is the
+raw HTML; for `wa search` this is the raw SearXNG JSON response. Useful when you
+want the original source rather than processed content.
 
 ### Output Contract
 
