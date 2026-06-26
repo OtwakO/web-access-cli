@@ -35,16 +35,15 @@ jobs:
       - name: Strip debug symbols
         run: strip target/release/wa
 
-      - name: Compress binary
-        run: |
-          mkdir -p dist
-          tar czf dist/wa-linux-x86_64.tar.gz -C target/release wa
-
-      - name: Upload artifact
+      # Upload the raw binary. upload-artifact wraps it in a single zip, so
+      # the release job unpacks one layer to recover the binary and then
+      # builds the final per-platform archive. No double compression.
+      - name: Upload binary artifact
         uses: actions/upload-artifact@v6
         with:
           name: wa-linux-x86_64
-          path: dist/wa-linux-x86_64.tar.gz
+          path: target/release/wa
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────
   # Windows — native MSVC build
@@ -67,21 +66,16 @@ jobs:
         env:
           RUSTFLAGS: "-C target-feature=+crt-static"
 
-      - name: Compress binary
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist
-          Compress-Archive -Path target\release\wa.exe -DestinationPath dist\wa-windows-x86_64.zip
-
-      - name: Upload artifact
+      - name: Upload binary artifact
         uses: actions/upload-artifact@v6
         with:
           name: wa-windows-x86_64
-          path: dist/wa-windows-x86_64.zip
+          path: target/release/wa.exe
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────
-  # macOS — Intel + Apple Silicon universal-ish
-  # (builds both, combines into one archive)
+  # macOS — Intel + Apple Silicon
+  # (builds both; each uploaded as its own artifact)
   # ─────────────────────────────────────────────
   build-macos:
     runs-on: macos-latest
@@ -104,26 +98,23 @@ jobs:
       - name: Build Apple Silicon (aarch64)
         run: cargo build --release --target aarch64-apple-darwin
 
-      - name: Compress binaries
-        run: |
-          mkdir -p dist
-          tar czf dist/wa-macos-x86_64.tar.gz  -C target/x86_64-apple-darwin/release  wa
-          tar czf dist/wa-macos-aarch64.tar.gz -C target/aarch64-apple-darwin/release wa
-
-      - name: Upload Intel artifact
+      - name: Upload Intel binary
         uses: actions/upload-artifact@v6
         with:
           name: wa-macos-x86_64
-          path: dist/wa-macos-x86_64.tar.gz
+          path: target/x86_64-apple-darwin/release/wa
+          if-no-files-found: error
 
-      - name: Upload ARM artifact
+      - name: Upload ARM binary
         uses: actions/upload-artifact@v6
         with:
           name: wa-macos-aarch64
-          path: dist/wa-macos-aarch64.tar.gz
+          path: target/aarch64-apple-darwin/release/wa
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────
-  # Release — attach all binaries to GitHub release
+  # Release — package each binary into a single
+  # per-platform archive and attach to the release.
   # Only runs on tag push (v*)
   # ─────────────────────────────────────────────
   release:
@@ -133,18 +124,24 @@ jobs:
     permissions:
       contents: write
     steps:
+      # download-artifact restores the original raw files (it strips the
+      # zip wrapper that upload-artifact adds), so each artifact dir holds
+      # the bare binary named `wa` / `wa.exe`.
       - uses: actions/download-artifact@v6
         with:
           path: artifacts
           merge-multiple: false
 
-      - name: Flatten artifacts for release
+      - name: Package release archives
         run: |
           mkdir -p release
-          cp artifacts/wa-linux-x86_64/wa-linux-x86_64.tar.gz       release/
-          cp artifacts/wa-windows-x86_64/wa-windows-x86_64.zip    release/
-          cp artifacts/wa-macos-x86_64/wa-macos-x86_64.tar.gz      release/
-          cp artifacts/wa-macos-aarch64/wa-macos-aarch64.tar.gz  release/
+          # Linux: tarball
+          tar czf release/wa-linux-x86_64.tar.gz -C artifacts/wa-linux-x86_64 wa
+          # macOS: tarballs (one per arch)
+          tar czf release/wa-macos-x86_64.tar.gz  -C artifacts/wa-macos-x86_64  wa
+          tar czf release/wa-macos-aarch64.tar.gz -C artifacts/wa-macos-aarch64 wa
+          # Windows: zip
+          (cd artifacts/wa-windows-x86_64 && zip -q ../../release/wa-windows-x86_64.zip wa.exe)
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
