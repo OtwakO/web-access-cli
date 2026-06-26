@@ -206,39 +206,34 @@ impl CrawlWorker {
         let fetch_url = self.rewriter.apply(&url).unwrap_or_else(|| url.clone());
         let was_rewritten = fetch_url != url;
 
-        // Fetch and extract in a single request. We discover child links from
-        // the extraction result's link list, so we do not need a separate
-        // fetch_raw() call. This preserves webclaw's rescue paths (Reddit,
-        // Akamai, LinkedIn, etc.) for both content and link discovery.
-        let extraction = match self
+        // Fetch and extract in a single HTTP request. We use
+        // `fetch_html_and_extract` (which delegates to webclaw's
+        // `fetch_smart`: Reddit rewrite + Akamai cookie warmup + SSRF guard)
+        // so content extraction and link discovery share one fetch and one
+        // consistent view of the page.
+        //
+        // Child links are scraped from the *raw HTML* rather than webclaw's
+        // `content.links`. webclaw selects a single content node and never
+        // walks sibling navigation (sidebars, menus), so `content.links`
+        // misses ~80% of navigable URLs on docs/manual sites (e.g. a
+        // Docusaurus sidebar yields 15 same-host links in raw HTML but only
+        // 2 in `content.links`). See PLAN.md Step 26 for the regression this
+        // corrected.
+        let (raw_html, extraction) = match self
             .extractor
-            .fetch_and_extract(&fetch_url, &ExtractionOptions::default())
+            .fetch_html_and_extract(&fetch_url, &ExtractionOptions::default())
             .await
         {
-            Ok(e) => e,
+            Ok(pair) => pair,
             Err(e) => {
-                tracing::warn!("extract failed for {}: {}", url, e);
+                tracing::warn!("fetch failed for {}: {}", url, e);
                 return Vec::new();
             }
         };
 
-        // Extract child links before moving `extraction` into the result.
-        //
-        // OLD: fetch_raw() + extract_links(&raw_html) parsed every <a href>
-        // in the raw HTML. Comprehensive, but required a second HTTP request
-        // (fetch_and_extract()) for content and could see inconsistent state.
-        //
-        // NEW: use webclaw's filtered `content.links` from the extraction
-        // result. This eliminates the second HTTP request and keeps rescue
-        // paths consistent, but webclaw drops noise links (tracking anchors,
-        // bare-integer pagination, comment fragments, etc.), so the crawl may
-        // discover fewer URLs than a raw-HTML scraper would.
-        let child_links: Vec<String> = extraction
-            .content
-            .links
-            .iter()
-            .map(|l| l.href.clone())
-            .collect();
+        // Harvest every same-host-capable link from the full document,
+        // including sidebar/menu links that content extraction skips.
+        let child_links = link_extract::extract_links(&raw_html, &fetch_url);
 
         // Store result
         let result = CrawlResult {
@@ -255,10 +250,9 @@ impl CrawlWorker {
             return Vec::new();
         }
 
-        let links = child_links;
         let mut children = Vec::new();
 
-        for link in links {
+        for link in child_links {
             let Some(norm) = link_extract::normalize_url(&link) else { continue };
             let Ok(parsed) = Url::parse(&norm) else { continue };
             if !link_extract::passes_filters(

@@ -1805,10 +1805,10 @@ cargo run -- git https://github.com/serde-rs/serde --max-files 10
   - Link discovery and content extraction use the same fetched document (no inconsistent state)
   - Rescue paths (Reddit old.reddit.com rewrite, Akamai cookie warmup, LinkedIn JSON extraction, PDF detection) now apply to both content and link discovery
 - **Behavioral change**: link source changed from raw-HTML `<a href>` scraping to webclaw's filtered `content.links`. In practice this means noise links (tracking pixels, JS hooks, comment fragments, bare-integer pagination, duplicate anchors) are less likely to be followed.
-- **Caveat**: the crawler may discover **fewer URLs** than before. webclaw's extraction pipeline strips links it classifies as non-content before populating `content.links`. This is usually desirable (higher-quality crawl), but it can miss legitimate pages on sites where navigation links look like noise (e.g., directory listings, heavy `?page=N` pagination, minimal-text menus). If a real site is missed, the fix should be revisited — not reverted — by adding a targeted fallback link source.
+- **Caveat (later corrected in Step 26)**: this approach turned out to be the wrong tool for crawl discovery. webclaw selects a single content node and never walks sibling navigation (sidebars, menus), so `content.links` missed ~80% of navigable URLs on docs/manual sites — e.g. drissionpage.cn (Docusaurus) crawled only 12 pages instead of 83. Step 26 reverted to raw-HTML link scraping via a new single-fetch `fetch_html_and_extract` method, restoring full coverage at 1 request/page.
 - **No new API surface**: only `crates/wa-crawl/src/crawler.rs` changed.
 - **Live verification**: `wa crawl https://example.com --depth 1` completed successfully and returned 1 page.
-- **Design insight**: whenever you need both raw HTML and extraction from webclaw, prefer `fetch_and_extract()` and derive what you need from `ExtractionResult.content` rather than making a second request.
+- **Design insight**: whenever you need both raw HTML and extraction from webclaw, prefer a single `fetch_smart()` and derive what you need from the returned HTML + `extract_with_options()` rather than making a second request. This is exactly what `wa-extract::fetch_html_and_extract` (Step 26) now provides.
 
 ### Step 23 — crawler max pages / frontier cap ✅
 - 105 tests pass, 16 ignored, 0 fails.
@@ -1852,6 +1852,15 @@ cargo run -- git https://github.com/serde-rs/serde --max-files 10
 - **Dependencies**: added `glob` to workspace root, `crates/wa-crawl/Cargo.toml`, and `crates/wa-cli/Cargo.toml`.
 - **Design insight**: glob filters are more precise than `--allow` substring matching because they anchor to path structure. Keeping `--allow`/`--deny` as-is preserves backward compatibility; `--include`/`--exclude` are the recommended path-filtering tools going forward.
 
+### Step 26 — crawl link-coverage regression fix ✅
+- 107 tests pass, 16 ignored, 0 fails.
+- **Problem**: the Step 22 fix switched crawl link discovery from raw-HTML scraping to webclaw's `content.links`. On docs/manual sites (e.g. drissionpage.cn, a Docusaurus SPA), the sidebar navigation is a *sibling* of the content node, so webclaw's content-node selection never walks it and no recovery function covers sidebars. Measured: `content.links` yielded 2 same-host outbound links/page vs 15 in raw HTML — a 7.5× frontier reduction that collapsed a depth-3 crawl from 83 pages to 12.
+- **Fix**: added `wa-extract::Extractor::fetch_html_and_extract(url, options) -> Result<(String, ExtractionResult)>`. It calls `FetchClient::fetch_smart` once (Reddit rewrite + Akamai cookie warmup + SSRF guard + transient retry) and runs `extract_with_options` on the returned HTML. The crawler uses the HTML for `link_extract::extract_links` (full sidebar coverage) and the `ExtractionResult` for output.
+- **Also upgraded** `wa-extract::fetch_raw` from `FetchClient::fetch` → `fetch_smart`, so every HTML-returning path is rescue-consistent. Side effect: `wa fetch --format raw` now works on Reddit/Akamai sites (previously returned bot walls).
+- **Trade-off (crawl path only)**: loses webclaw's PDF / LinkedIn / document rescue, since those carry no HTML links and aren't crawl targets. `wa fetch` (single page) is unchanged and keeps full rescue. A `--deny "*.pdf"` glob handles the binary-document edge case explicitly.
+- **Live verification**: `wa crawl https://www.drissionpage.cn --depth 3 --max-pages 200` → **83 pages** (matches the pre-regression behavior), 1 HTTP request/page. Reddit extraction confirmed working on a real post.
+- **Design insight**: webclaw's `content.links` is the right tool for *content* link surfacing (LLM output), not for *crawl* frontier expansion. Crawl discovery needs the full document graph, including navigation siblings — which requires raw HTML. The fix keeps the single-request efficiency of Step 22 while restoring raw-HTML coverage, and gains rescue paths the old double-fetch never had (it used rescue-less `fetch()` for links).
+
 ## 19. Implementation insights & gotchas
 
 ### webclaw-fetch dependency
@@ -1861,7 +1870,7 @@ cargo run -- git https://github.com/serde-rs/serde --max-files 10
 - webclaw-fetch does NOT re-export `ExtractionOptions` or `ExtractionResult` — these live in `webclaw-core` which must be added as a separate git dependency.
 - `fetch_and_extract_batch_with_options` requires `self: &Arc<Self>`, so `Extractor` stores `Arc<FetchClient>`.
 - webclaw-fetch's `fetch()` has built-in retry logic (2 attempts at 0s + 1s delays for retryable codes 429, 502-504, 520-524). Do NOT add another retry layer on top.
-- `FetchClient::fetch_and_extract_with_options()` includes rescue paths executed BEFORE `webclaw_core::extract_with_options()`: Reddit JSON API, Akamai cookie warmup, PDF detection, document type detection, LinkedIn JSON extraction. Always delegate to this method, never call `fetch()` + `extract_with_options()` separately. `wa-crawl` previously violated this by calling `fetch_raw()` + `fetch_and_extract()` per page; fixed in Step 22.
+- `FetchClient::fetch_and_extract_with_options()` includes rescue paths executed BEFORE `webclaw_core::extract_with_options()`: Reddit JSON API, Akamai cookie warmup, PDF detection, document type detection, LinkedIn JSON extraction. Always delegate to this method for single-page content extraction, never call `fetch()` + `extract_with_options()` separately. `wa-crawl` previously violated this by calling `fetch_raw()` + `fetch_and_extract()` per page; fixed in Step 22, then refined in Step 26 to use the new single-fetch `fetch_html_and_extract` (which deliberately uses `fetch_smart` + `extract_with_options` rather than `fetch_and_extract`, because the crawl path needs raw HTML for sidebar link discovery and doesn't need PDF/LinkedIn/document rescue).
 
 ### webclaw-core API surprises
 - `to_llm_text(result, url)` is a **free function**, not a method on `ExtractionResult`. Signature: `to_llm_text(&ExtractionResult, Option<&str>) -> String`.

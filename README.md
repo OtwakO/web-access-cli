@@ -345,7 +345,7 @@ wa crawl https://example.com --format llm --output site-content.md
 
 **Behavior:**
 - Only crawls URLs on the **same host** as the seed
-- Discovers links from webclaw's filtered `content.links` (not raw HTML), which drops noise anchors like tracking pixels and bare-integer pagination
+- Discovers links from the full raw HTML (every `<a href>`, including sidebar/menu links that content extraction skips)
 - Applies URL rewrite rules from config before fetching
 - Deduplicates by normalized URL (strips fragments, `utm_*` params, trailing `/`)
 - Failed pages are silently skipped (other pages still returned)

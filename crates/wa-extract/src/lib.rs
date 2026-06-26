@@ -125,12 +125,46 @@ impl Extractor {
     }
 
     /// Fetch raw HTML without extraction.
+    ///
+    /// Uses `fetch_smart`, so Reddit URLs are rewritten to `old.reddit.com`
+    /// and Akamai-style challenge pages trigger a homepage cookie warmup
+    /// before retrying. This keeps every HTML-returning path consistent
+    /// with `fetch_and_extract`'s rescue behavior.
     pub async fn fetch_raw(&self, url: &str) -> Result<String, WaError> {
         self.client
-            .fetch(url)
+            .fetch_smart(url)
             .await
             .map_err(|e| WaError::fetch(url, format!("{}", e)))
             .map(|r| r.html)
+    }
+
+    /// Fetch a URL and extract content from the same HTML, in a single HTTP
+    /// request.
+    ///
+    /// Delegates to `FetchClient::fetch_smart` (Reddit rewrite + Akamai
+    /// cookie warmup + SSRF guard + transient retry), then runs
+    /// `webclaw_core::extract_with_options` on the returned HTML. Returns
+    /// both the raw HTML (for callers that need the full document, e.g.
+    /// crawl link discovery) and the extraction result.
+    ///
+    /// Unlike `fetch_and_extract`, this does **not** run webclaw's PDF,
+    /// LinkedIn, or document rescue paths — those targets carry no HTML
+    /// links and aren't crawlable, so they're intentionally omitted here
+    /// to keep a single request and expose the raw HTML.
+    pub async fn fetch_html_and_extract(
+        &self,
+        url: &str,
+        options: &ExtractionOptions,
+    ) -> Result<(String, ExtractionResult), WaError> {
+        let fetched = self
+            .client
+            .fetch_smart(url)
+            .await
+            .map_err(|e| WaError::fetch(url, format!("{}", e)))?;
+        let html = fetched.html;
+        let extraction = extract_with_options(&html, Some(url), options)
+            .map_err(|e| WaError::fetch(url, format!("{}", e)))?;
+        Ok((html, extraction))
     }
 
     /// Discover API endpoints embedded in a page and its JavaScript bundles.
