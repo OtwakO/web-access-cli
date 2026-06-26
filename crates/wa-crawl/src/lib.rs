@@ -27,6 +27,13 @@ pub struct CrawlOptions {
     pub deny: Vec<regex::Regex>,
     /// If true, treat seed URL as a sitemap instead of BFS seed.
     pub sitemap: bool,
+    /// Maximum number of pages to fetch (including seed/sitemap URLs).
+    pub max_pages: usize,
+    /// Glob patterns for URL paths to include. If non-empty, a URL must
+    /// match at least one pattern to be crawled.
+    pub include_patterns: Vec<glob::Pattern>,
+    /// Glob patterns for URL paths to exclude. Matching URLs are skipped.
+    pub exclude_patterns: Vec<glob::Pattern>,
 }
 
 impl Default for CrawlOptions {
@@ -37,6 +44,9 @@ impl Default for CrawlOptions {
             allow: Vec::new(),
             deny: Vec::new(),
             sitemap: false,
+            max_pages: 100,
+            include_patterns: Vec::new(),
+            exclude_patterns: Vec::new(),
         }
     }
 }
@@ -65,6 +75,16 @@ pub struct CrawlResult {
     pub source: CrawlSource,
     /// Extracted content from the page.
     pub extraction: wa_extract::ExtractionResult,
+}
+
+/// Full output of a crawl, including per-page results and crawl metadata.
+#[derive(Debug, Clone)]
+pub struct CrawlOutput {
+    /// Successfully extracted pages in discovery order.
+    pub results: Vec<CrawlResult>,
+    /// True if the sitemap seed yielded no URLs and the crawler fell back
+    /// to BFS from the host root.
+    pub used_sitemap_fallback: bool,
 }
 
 /// Build an [`Extractor`] and optional [`UrlRewriter`] from a [`wa_core::config::Config`].

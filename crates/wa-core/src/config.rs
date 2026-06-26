@@ -42,6 +42,11 @@ fn default_retry_delay_ms() -> u64 {
     500
 }
 
+/// Default maximum number of pages to crawl in `wa crawl`.
+fn default_max_pages() -> usize {
+    100
+}
+
 /// Full application configuration.
 ///
 /// Loaded in layered precedence:
@@ -99,6 +104,10 @@ pub struct Config {
     #[serde(default = "default_retry_delay_ms")]
     pub retry_delay_ms: u64,
 
+    /// Maximum number of pages to fetch during `wa crawl`.
+    #[serde(default = "default_max_pages")]
+    pub max_pages: usize,
+
     /// Ordered list of URL rewrite rules. Applied before every HTTP
     /// fetch; first match wins. If no rule matches, the original URL
     /// is used unchanged.
@@ -118,6 +127,7 @@ impl Default for Config {
             browser_endpoint: default_browser_endpoint(),
             retries: default_retries(),
             retry_delay_ms: default_retry_delay_ms(),
+            max_pages: default_max_pages(),
             url_rewrites: Vec::new(),
         }
     }
@@ -269,6 +279,7 @@ impl Config {
         self.browser_endpoint = file_cfg.browser_endpoint;
         self.retries = file_cfg.retries;
         self.retry_delay_ms = file_cfg.retry_delay_ms;
+        self.max_pages = file_cfg.max_pages;
         self.url_rewrites = file_cfg.url_rewrites;
     }
 
@@ -290,6 +301,11 @@ impl Config {
         if let Ok(v) = std::env::var("WA_RETRIES") {
             if let Ok(n) = v.parse() {
                 self.retries = n;
+            }
+        }
+        if let Ok(v) = std::env::var("WA_MAX_PAGES") {
+            if let Ok(n) = v.parse() {
+                self.max_pages = n;
             }
         }
     }
@@ -326,6 +342,9 @@ const CONFIG_TEMPLATE: &str = r##"# wa configuration
 
 # Max text files to read from a cloned repo
 # max_files = 100
+
+# Max pages to fetch during `wa crawl`
+# max_pages = 100
 
 # URL rewrite rules — applied before every HTTP fetch.
 # First match wins. Use Rust regex syntax; $1, $2… are capture groups.

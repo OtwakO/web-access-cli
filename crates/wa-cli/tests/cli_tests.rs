@@ -1,7 +1,6 @@
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
 use std::process::Command;
-use std::io::Write;
 
 /// Helper: get the wa binary path
 fn wa_bin() -> Command {
@@ -162,4 +161,20 @@ fn cli_git_output_file() {
     let content = std::fs::read_to_string(&out).unwrap();
     assert!(content.contains("README.md"));
     assert!(content.contains("# Test"));
+}
+
+// ---- T67: fetch --endpoints rejects multiple URLs ----------------------------
+
+#[test]
+fn fetch_endpoints_rejects_multiple_urls() {
+    let mut cmd = wa_bin();
+    cmd.args([
+        "fetch",
+        "--endpoints",
+        "https://example.com/",
+        "https://example.org/",
+    ]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("supports only a single URL"));
 }

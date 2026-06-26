@@ -13,6 +13,7 @@ mod tests {
         assert_eq!(cfg.proxy, None);
         assert_eq!(cfg.max_file_size, 102_400);
         assert_eq!(cfg.max_files, 100);
+        assert_eq!(cfg.max_pages, 100);
         assert_eq!(cfg.retries, 3);
         assert_eq!(cfg.retry_delay_ms, 500);
     }
@@ -87,6 +88,16 @@ max_files = 50
         temp_env::with_var("WA_SEARXNG_URL", Some("https://from-env.example.com"), || {
             let cfg = Config::load(Some(&path)).unwrap();
             assert_eq!(cfg.searxng_url, "https://from-env.example.com");
+        });
+    }
+
+    // ---- T5b: config_env_override_max_pages ---------------------------------
+
+    #[test]
+    fn config_env_override_max_pages() {
+        temp_env::with_var("WA_MAX_PAGES", Some("250"), || {
+            let cfg = Config::load(None).unwrap();
+            assert_eq!(cfg.max_pages, 250);
         });
     }
 

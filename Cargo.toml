@@ -28,10 +28,12 @@ toml = "0.8"
 tempfile = "3"
 regex = "1"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+flate2 = "1"
+glob = "0.3"
 
 # External — webclaw full stack (fetching + extraction, AGPL-3.0)
 # Pinned to a specific commit for reproducible builds.
-webclaw-fetch = { git = "https://github.com/0xMassi/webclaw", rev = "3fabdc1" }
+webclaw-fetch = { git = "https://github.com/0xMassi/webclaw", rev = "ecfb72a" }
 
 # Dev dependencies
 wiremock = "0.6"

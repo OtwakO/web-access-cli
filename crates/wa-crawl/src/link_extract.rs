@@ -71,12 +71,14 @@ pub fn normalize_url(url_str: &str) -> Option<String> {
     Some(s.trim_end_matches('/').to_string())
 }
 
-/// Check if a URL passes host, allow, and deny filters.
+/// Check if a URL passes host, allow, deny, and glob filters.
 pub fn passes_filters(
     url: &Url,
     seed_host: &str,
     allow: &[String],
     deny: &[regex::Regex],
+    include_patterns: &[glob::Pattern],
+    exclude_patterns: &[glob::Pattern],
 ) -> bool {
     if url.host_str() != Some(seed_host) {
         return false;
@@ -89,6 +91,18 @@ pub fn passes_filters(
     if !allow.is_empty() {
         let path = url.path();
         if !allow.iter().any(|sub| path.contains(sub)) {
+            return false;
+        }
+    }
+    if !include_patterns.is_empty() {
+        let path = url.path();
+        if !include_patterns.iter().any(|pat| pat.matches(path)) {
+            return false;
+        }
+    }
+    if !exclude_patterns.is_empty() {
+        let path = url.path();
+        if exclude_patterns.iter().any(|pat| pat.matches(path)) {
             return false;
         }
     }
@@ -186,35 +200,57 @@ mod tests {
     #[test]
     fn passes_filters_same_host() {
         let url = Url::parse("https://example.com/page").unwrap();
-        assert!(passes_filters(&url, "example.com", &[], &[]));
+        assert!(passes_filters(&url, "example.com", &[], &[], &[], &[]));
     }
 
     #[test]
     fn passes_filters_different_host() {
         let url = Url::parse("https://other.com/page").unwrap();
-        assert!(!passes_filters(&url, "example.com", &[], &[]));
+        assert!(!passes_filters(&url, "example.com", &[], &[], &[], &[]));
     }
 
     #[test]
     fn passes_filters_deny_regex() {
         let url = Url::parse("https://example.com/admin/secret").unwrap();
         let deny = vec![regex::Regex::new(r"/admin/").unwrap()];
-        assert!(!passes_filters(&url, "example.com", &[], &deny));
+        assert!(!passes_filters(&url, "example.com", &[], &deny, &[], &[]));
     }
 
     #[test]
     fn passes_filters_allow_list() {
         let url = Url::parse("https://example.com/docs/page").unwrap();
         let allow = vec!["docs".into(), "blog".into()];
-        assert!(passes_filters(&url, "example.com", &allow, &[]));
+        assert!(passes_filters(&url, "example.com", &allow, &[], &[], &[]));
 
         let url2 = Url::parse("https://example.com/other/page").unwrap();
-        assert!(!passes_filters(&url2, "example.com", &allow, &[]));
+        assert!(!passes_filters(&url2, "example.com", &allow, &[], &[], &[]));
     }
 
     #[test]
     fn passes_filters_empty_allow_is_pass() {
         let url = Url::parse("https://example.com/anything").unwrap();
-        assert!(passes_filters(&url, "example.com", &[], &[]));
+        assert!(passes_filters(&url, "example.com", &[], &[], &[], &[]));
+    }
+
+    #[test]
+    fn passes_filters_glob_include() {
+        let include = vec![glob::Pattern::new("/docs/**").unwrap()];
+
+        let url = Url::parse("https://example.com/docs/v2/intro").unwrap();
+        assert!(passes_filters(&url, "example.com", &[], &[], &include, &[]));
+
+        let url2 = Url::parse("https://example.com/blog/post").unwrap();
+        assert!(!passes_filters(&url2, "example.com", &[], &[], &include, &[]));
+    }
+
+    #[test]
+    fn passes_filters_glob_exclude() {
+        let exclude = vec![glob::Pattern::new("/admin/**").unwrap()];
+
+        let url = Url::parse("https://example.com/admin/users").unwrap();
+        assert!(!passes_filters(&url, "example.com", &[], &[], &[], &exclude));
+
+        let url2 = Url::parse("https://example.com/public/page").unwrap();
+        assert!(passes_filters(&url2, "example.com", &[], &[], &[], &exclude));
     }
 }

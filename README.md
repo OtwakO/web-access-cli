@@ -80,6 +80,7 @@ retries = 3                                  # transient failure retries
 retry_delay_ms = 500                         # base delay (exponential backoff + 25% jitter)
 max_file_size = 102400                       # max bytes per file from git clone
 max_files = 100                              # max text files from git clone
+max_pages = 100                              # max pages for wa crawl
 ```
 
 ### Environment Variables
@@ -167,6 +168,31 @@ match_regex = '^https?://stackoverflow\.com/questions/(\d+)(/.*)?$'
 replace = 'https://stackoverflow.com/questions/$1'
 ```
 
+### Shell Quoting
+
+Bash history expansion and word splitting are the most common ways a URL gets
+mangled before it reaches `wa`:
+
+```bash
+# ❌ fails: bash expands !images as history
+wa search !images paris
+
+# ✅ single quotes suppress history expansion
+wa search '!images paris'
+
+# ❌ fails: bash backgrounds at & and drops y=2
+wa fetch https://api.example.com?x=1&y=2
+
+# ✅ single quotes keep the URL intact
+wa fetch 'https://api.example.com?x=1&y=2'
+
+# ✅ or use --url-encoded to suppress the warning on an intentional URL
+wa fetch --url-encoded 'https://api.example.com?foo'
+```
+
+`wa` warns when a positional URL looks truncated (ends with `&` or has a bare
+query key like `?foo`). Use `--url-encoded` to silence the warning.
+
 ## Commands
 
 All commands support global flags: `--quiet`, `--format <fmt>`, `--output PATH`,
@@ -213,6 +239,12 @@ wa fetch https://example.com --include "article" --exclude ".sidebar,nav"
 
 # With raw HTML included in result
 wa fetch https://example.com --include-raw-html
+
+# Discover API endpoints in page + JS bundles (JSON output)
+wa fetch https://api.example.com --endpoints
+
+# Shell-safe URL quoting (bash splits unquoted URLs at &)
+wa fetch 'https://example.com?foo=1&bar=2'
 ```
 
 | Flag | Default | Description |
@@ -228,6 +260,8 @@ wa fetch https://example.com --include-raw-html
 | `--only-main-content` | off | Auto-detect and extract main content only |
 | `--include-raw-html` | off | Attach raw HTML to result (JSON format) |
 | `--include-structured-data` | off | Append JSON-LD structured data appendix |
+| `--endpoints` | off | Discover API endpoints instead of extracting content |
+| `--url-encoded` | off | Suppress shell-splitting warning |
 
 ### `wa browser` — Browser-Backed Fetch
 
@@ -252,6 +286,7 @@ wa browser https://spa.example.com --browser-endpoint "http://localhost:8000/htm
 | `--only-main-content` | off | Auto-detect main content |
 | `--include-raw-html` | off | Attach raw HTML to result (JSON format) |
 | `--include-structured-data` | off | Append JSON-LD structured data appendix |
+| `--url-encoded` | off | Suppress shell-splitting warning |
 
 *`wa browser` and `wa fetch` share the same extraction pipeline — only the
 HTML source differs.*
@@ -268,14 +303,26 @@ wa crawl https://example.com
 # Limit depth and concurrency
 wa crawl https://example.com --depth 2 --concurrency 8
 
-# Sitemap-based crawl (much faster for large sites)
+# Sitemap-based crawl (falls back to BFS if sitemap is empty)
 wa crawl https://example.com/sitemap.xml --sitemap
+
+# Sitemap from host root (auto-discovers robots.txt + common paths, falls back to BFS)
+wa crawl https://example.com --sitemap
+
+# Cap pages and use auto-discovered sitemap
+wa crawl https://docs.rs --sitemap --max-pages 20 --format llm
 
 # Filter to specific paths only
 wa crawl https://docs.rs --depth 2 --allow "/tokio" --allow "/async"
 
+# Include only docs paths via glob
+wa crawl https://example.com --include "/docs/**" --include "/blog/**"
+
+# Exclude paths by glob
+wa crawl https://example.com --exclude "/admin/**" --exclude "/cdn/**"
+
 # Exclude paths by regex
-wa crawl https://example.com --deny ".*admin.*" --deny ".*login.*"
+wa crawl https://example.com --deny ".*login.*"
 
 # Output as LLM-optimized text
 wa crawl https://example.com --format llm --output site-content.md
@@ -286,18 +333,24 @@ wa crawl https://example.com --format llm --output site-content.md
 | `URL` | required | Seed URL (or sitemap URL with `--sitemap`) |
 | `--depth` | `3` | Max BFS depth (0 = seed only) |
 | `--concurrency` | `4` | Parallel fetch workers |
+| `--max-pages` | config/`100` | Maximum pages to fetch (safety cap) |
 | `--allow` | none | Path substrings URLs must contain (repeatable) |
+| `--include` | none | Glob patterns for URL paths to include, e.g. `/docs/**` (repeatable) |
 | `--deny` | none | Regex patterns to reject URLs (repeatable) |
-| `--sitemap` | off | Treat seed as XML sitemap |
+| `--exclude` | none | Glob patterns for URL paths to exclude, e.g. `/admin/**` (repeatable) |
+| `--sitemap` | off | Treat seed as XML sitemap or auto-discover from host root; falls back to BFS if empty |
 | `--no-meta` | off | Omit metadata header from each page |
 | `--include-structured-data` | off | Append JSON-LD to each page |
+| `--url-encoded` | off | Suppress shell-splitting warning |
 
 **Behavior:**
 - Only crawls URLs on the **same host** as the seed
-- Discovers links via `<a href>` tags in page HTML
+- Discovers links from webclaw's filtered `content.links` (not raw HTML), which drops noise anchors like tracking pixels and bare-integer pagination
 - Applies URL rewrite rules from config before fetching
 - Deduplicates by normalized URL (strips fragments, `utm_*` params, trailing `/`)
 - Failed pages are silently skipped (other pages still returned)
+- `--max-pages` caps total pages fetched and the in-memory link frontier
+- `--sitemap` falls back to BFS from the host root if the sitemap is empty or fails to parse
 
 ### `wa git` — Git Repository
 

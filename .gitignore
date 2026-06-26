@@ -6,6 +6,7 @@ target/
 .vscode/
 *.swp
 *.swo
+.pi
 
 # OS
 .DS_Store

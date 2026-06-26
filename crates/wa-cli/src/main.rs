@@ -130,6 +130,15 @@ enum Commands {
         /// Include JSON-LD structured data appendix in markdown/llm output
         #[arg(long)]
         include_structured_data: bool,
+
+        /// Discover API endpoints in the page and its JS bundles instead of
+        /// extracting content. Output is JSON regardless of --format.
+        #[arg(long)]
+        endpoints: bool,
+
+        /// Assert that URLs are already shell-escaped; suppress truncation warnings
+        #[arg(long)]
+        url_encoded: bool,
     },
 
     /// Clone a git repository and list text files
@@ -198,6 +207,10 @@ enum Commands {
         /// Include JSON-LD structured data appendix in markdown/llm output
         #[arg(long)]
         include_structured_data: bool,
+
+        /// Assert that URLs are already shell-escaped; suppress truncation warnings
+        #[arg(long)]
+        url_encoded: bool,
     },
 
     /// Crawl a website starting from a seed URL (BFS or sitemap)
@@ -214,13 +227,25 @@ enum Commands {
         #[arg(long, default_value = "4")]
         concurrency: usize,
 
+        /// Maximum pages to fetch (including seed/sitemap pages)
+        #[arg(long)]
+        max_pages: Option<usize>,
+
         /// Path substrings that URLs must contain (repeatable)
         #[arg(long)]
         allow: Vec<String>,
 
+        /// Glob patterns for URL paths to include, e.g. `/docs/**` (repeatable)
+        #[arg(long)]
+        include: Vec<String>,
+
         /// Regex patterns to reject URLs (repeatable)
         #[arg(long)]
         deny: Vec<String>,
+
+        /// Glob patterns for URL paths to exclude, e.g. `/admin/**` (repeatable)
+        #[arg(long)]
+        exclude: Vec<String>,
 
         /// Treat seed URL as an XML sitemap instead of BFS seed
         #[arg(long)]
@@ -245,6 +270,10 @@ enum Commands {
         /// Include JSON-LD structured data appendix in markdown/llm output
         #[arg(long)]
         include_structured_data: bool,
+
+        /// Assert that the seed URL is already shell-escaped; suppress truncation warnings
+        #[arg(long)]
+        url_encoded: bool,
     },
 }
 
@@ -875,6 +904,45 @@ fn format_git_markdown(repo: &wa_core::types::ClonedRepo) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// URL shell-splitting warning
+// ---------------------------------------------------------------------------
+
+/// Detect URLs that look truncated by the shell (e.g. an unquoted URL that
+/// bash split on `&` or `=`). Returns true when:
+///   - the URL ends with `&` (a trailing param separator suggests the next
+///     param was lopped off), OR
+///   - the URL contains `?` but no `=` after it (a query with bare keys is
+///     rare; usually a real query has at least one `=`).
+///
+/// This is a heuristic; legitimate URLs with bare-key queries will trigger a
+/// false positive (suppressible via `--url-encoded`).
+fn looks_truncated(url: &str) -> bool {
+    let trimmed = url.trim();
+    if trimmed.ends_with('&') {
+        return true;
+    }
+    if let Some((_before, after_q)) = trimmed.split_once('?') {
+        let query_part = after_q.split('#').next().unwrap_or(after_q);
+        if !query_part.contains('=') {
+            return true;
+        }
+    }
+    false
+}
+
+/// Warn on stderr if a URL looks shell-truncated and the user has not
+/// explicitly asserted the URL is escaped.
+fn warn_truncated_url(url: &str, quiet: bool, url_encoded: bool) {
+    if quiet || url_encoded || !looks_truncated(url) {
+        return;
+    }
+    eprintln!(
+        "# wa: warning: URL looks truncated (ends with '&' or has bare query key); \
+         did the shell split it? Quote the URL or use --url-encoded."
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -1129,6 +1197,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             only_main_content,
             include_raw_html,
             include_structured_data,
+            url_encoded,
+            endpoints,
         } => {
             let cfg = wa_core::config::Config::load(config_arg)?;
             let rewriter = wa_core::url_rewrite::UrlRewriter::new(&cfg.url_rewrites)
@@ -1160,7 +1230,23 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 options.include_raw_html = true;
             }
 
+            if endpoints {
+                if urls.len() != 1 {
+                    return Err("--endpoints supports only a single URL".into());
+                }
+                warn_truncated_url(&urls[0], quiet, url_encoded);
+                if !quiet {
+                    eprintln!("Discovering endpoints: {}", urls[0]);
+                }
+                let report = extractor.extract_endpoints(&urls[0]).await.map_err(|e| format!("{}", e))?;
+                let json = serde_json::to_string_pretty(&report)
+                    .unwrap_or_else(|_| "{}".into());
+                write_output(&json, output_file.as_deref())?;
+                return Ok(());
+            }
+
             if urls.len() == 1 {
+                warn_truncated_url(&urls[0], quiet, url_encoded);
                 if !quiet {
                     eprintln!("Fetching: {}", urls[0]);
                 }
@@ -1298,6 +1384,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             only_main_content,
             include_raw_html,
             include_structured_data,
+            url_encoded,
         } => {
             let cfg = wa_core::config::Config::load(config_arg)?;
             let rewriter = wa_core::url_rewrite::UrlRewriter::new(&cfg.url_rewrites)
@@ -1321,6 +1408,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let client = reqwest::Client::new();
 
             if urls.len() == 1 {
+                warn_truncated_url(&urls[0], quiet, url_encoded);
                 if !quiet {
                     eprintln!("Browser fetching: {}", urls[0]);
                 }
@@ -1467,14 +1555,18 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             url: seed,
             depth,
             concurrency,
+            max_pages,
             allow,
+            include,
             deny,
+            exclude,
             sitemap,
             browser,
             proxy,
             cookies,
             no_meta,
             include_structured_data,
+            url_encoded,
         } => {
             let cfg = wa_core::config::Config::load(config_arg)?;
             let (extractor, rewriter) = wa_crawl::build_extractor_from_config(&cfg, browser, proxy, Some(cookies))?;
@@ -1484,23 +1576,41 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 .map(|p| regex::Regex::new(p).map_err(|e| format!("invalid deny pattern '{}': {}", p, e)))
                 .collect::<Result<Vec<_>, _>>()?;
 
+            let include_patterns: Vec<glob::Pattern> = include
+                .iter()
+                .map(|p| glob::Pattern::new(p).map_err(|e| format!("invalid include glob '{}': {}", p, e)))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let exclude_patterns: Vec<glob::Pattern> = exclude
+                .iter()
+                .map(|p| glob::Pattern::new(p).map_err(|e| format!("invalid exclude glob '{}': {}", p, e)))
+                .collect::<Result<Vec<_>, _>>()?;
+
             let opts = wa_crawl::CrawlOptions {
                 depth,
                 concurrency,
                 allow,
                 deny: deny_regexps,
                 sitemap,
+                max_pages: max_pages.unwrap_or(cfg.max_pages),
+                include_patterns,
+                exclude_patterns,
             };
 
             let crawler = wa_crawl::Crawler::new(extractor, rewriter, opts);
 
+            warn_truncated_url(&seed, quiet, url_encoded);
             if !quiet {
                 eprintln!("Crawling: {}", seed);
             }
 
-            let results = crawler.crawl(&seed).await?;
+            let crawl_output = crawler.crawl(&seed).await?;
+            let results = crawl_output.results;
 
             if !quiet {
+                if crawl_output.used_sitemap_fallback {
+                    eprintln!("Sitemap was empty or failed to parse; fell back to BFS from host root.");
+                }
                 eprintln!("Crawled {} pages.", results.len());
             }
 
@@ -1799,5 +1909,32 @@ mod tests {
     fn clean_links_footer_no_links_section_unchanged() {
         let input = "Just body text with no footer.";
         assert_eq!(clean_links_footer_urls(input), input);
+    }
+
+    #[test]
+    fn looks_truncated_fires_on_trailing_ampersand() {
+        assert!(looks_truncated("https://example.com/?a=1&"));
+        assert!(looks_truncated("https://example.com/path?key=val&"));
+    }
+
+    #[test]
+    fn looks_truncated_fires_on_bare_query_key() {
+        assert!(looks_truncated("https://example.com/?foo"));
+        assert!(looks_truncated("https://example.com/?"));
+        assert!(looks_truncated("https://example.com/?foo#section"));
+    }
+
+    #[test]
+    fn looks_truncated_silent_on_clean_url() {
+        assert!(!looks_truncated("https://example.com/"));
+        assert!(!looks_truncated("https://example.com/path/to/page"));
+        assert!(!looks_truncated("https://example.com/?a=1"));
+        assert!(!looks_truncated("https://example.com/?a=1&b=2"));
+        assert!(!looks_truncated("https://example.com/?a=1&b=2&c=hello%20world"));
+    }
+
+    #[test]
+    fn looks_truncated_silent_on_hash_only() {
+        assert!(!looks_truncated("https://example.com/#section"));
     }
 }

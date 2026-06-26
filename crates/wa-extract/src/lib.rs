@@ -11,6 +11,7 @@ use std::sync::Arc;
 use wa_core::error::WaError;
 
 // Re-export for callers
+pub use webclaw_core::endpoints::EndpointReport;
 pub use webclaw_core::extract;
 pub use webclaw_core::extract_with_options;
 pub use webclaw_core::to_llm_text;
@@ -130,6 +131,29 @@ impl Extractor {
             .await
             .map_err(|e| WaError::fetch(url, format!("{}", e)))
             .map(|r| r.html)
+    }
+
+    /// Discover API endpoints embedded in a page and its JavaScript bundles.
+    ///
+    /// Fetches the page HTML, collects `<script src>` URLs, fetches each
+    /// bundle, then runs webclaw-core's endpoint surface discovery over the
+    /// combined text. Returns relative paths, absolute URLs, GraphQL ops,
+    /// and WebSocket endpoints.
+    pub async fn extract_endpoints(&self, url: &str) -> Result<EndpointReport, WaError> {
+        let html = self.fetch_raw(url).await?;
+        let script_urls = webclaw_core::endpoints::script_srcs(&html, url);
+
+        let mut bundles = Vec::with_capacity(script_urls.len());
+        for script_url in script_urls {
+            match self.fetch_raw(&script_url).await {
+                Ok(text) => bundles.push((script_url, text)),
+                Err(e) => {
+                    tracing::warn!("failed to fetch script bundle {}: {}", script_url, e);
+                }
+            }
+        }
+
+        Ok(webclaw_core::endpoints::extract_endpoints(&html, url, &bundles))
     }
 
     /// Fetch and extract multiple URLs concurrently.
