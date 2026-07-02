@@ -360,6 +360,12 @@ fn format_search_fetch_json(
                         obj["code_blocks"] = serde_json::json!(er.content.code_blocks);
                         obj["domain"] = serde_json::json!(er.domain_data.as_ref().map(|d| format!("{:?}", d.domain_type).to_lowercase()));
                         obj["structured_data"] = serde_json::json!(er.structured_data);
+                        // Only surfaced when the caller opts in via
+                        // --include-raw-html; raw HTML is large, so it is
+                        // omitted from default JSON output.
+                        if let Some(ref raw_html) = er.content.raw_html {
+                            obj["raw_html"] = serde_json::json!(raw_html);
+                        }
                     }
                     Err(err) => {
                         obj["status"] = serde_json::json!("error");
@@ -1936,5 +1942,71 @@ mod tests {
     #[test]
     fn looks_truncated_silent_on_hash_only() {
         assert!(!looks_truncated("https://example.com/#section"));
+    }
+
+    // ---- format_search_fetch_json: raw_html surfacing (T36 CLI gap) ----
+
+    /// Minimal ExtractionResult fixture. webclaw's type has no Default, so we
+    /// build only the fields the formatter reads.
+    fn extraction_fixture(raw_html: Option<&str>) -> wa_extract::ExtractionResult {
+        use wa_extract::{Content, Metadata};
+        wa_extract::ExtractionResult {
+            metadata: Metadata {
+                title: Some("T".into()),
+                description: None,
+                author: None,
+                published_date: None,
+                language: None,
+                url: None,
+                site_name: None,
+                image: None,
+                favicon: None,
+                word_count: 0,
+            },
+            content: Content {
+                markdown: "# T\n\nbody".into(),
+                plain_text: "body".into(),
+                links: Vec::new(),
+                images: Vec::new(),
+                code_blocks: Vec::new(),
+                raw_html: raw_html.map(str::to_owned),
+            },
+            domain_data: None,
+            structured_data: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn fetch_json_surfaces_raw_html_when_present() {
+        let search = vec![wa_core::types::SearchResult {
+            title: "T".into(),
+            url: "https://example.com".into(),
+            snippet: String::new(),
+            img_src: None,
+        }];
+        let extracted = vec![wa_extract::BatchExtractResult {
+            url: "https://example.com".into(),
+            result: Ok(extraction_fixture(Some("<p>raw</p>"))),
+        }];
+        let out = format_search_fetch_json(&search, &extracted);
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed[0]["raw_html"], "<p>raw</p>");
+    }
+
+    #[test]
+    fn fetch_json_omits_raw_html_when_absent() {
+        let search = vec![wa_core::types::SearchResult {
+            title: "T".into(),
+            url: "https://example.com".into(),
+            snippet: String::new(),
+            img_src: None,
+        }];
+        let extracted = vec![wa_extract::BatchExtractResult {
+            url: "https://example.com".into(),
+            result: Ok(extraction_fixture(None)),
+        }];
+        let out = format_search_fetch_json(&search, &extracted);
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(parsed[0].get("raw_html").is_none());
     }
 }

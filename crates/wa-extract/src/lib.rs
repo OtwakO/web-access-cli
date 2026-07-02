@@ -17,6 +17,7 @@ pub use webclaw_core::extract_with_options;
 pub use webclaw_core::to_llm_text;
 pub use webclaw_core::ExtractionOptions;
 pub use webclaw_core::ExtractionResult;
+pub use webclaw_core::{Content, Metadata};
 
 /// Browser profile for TLS fingerprinting.
 ///

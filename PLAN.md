@@ -1861,6 +1861,14 @@ cargo run -- git https://github.com/serde-rs/serde --max-files 10
 - **Live verification**: `wa crawl https://www.drissionpage.cn --depth 3 --max-pages 200` → **83 pages** (matches the pre-regression behavior), 1 HTTP request/page. Reddit extraction confirmed working on a real post.
 - **Design insight**: webclaw's `content.links` is the right tool for *content* link surfacing (LLM output), not for *crawl* frontier expansion. Crawl discovery needs the full document graph, including navigation siblings — which requires raw HTML. The fix keeps the single-request efficiency of Step 22 while restoring raw-HTML coverage, and gains rescue paths the old double-fetch never had (it used rescue-less `fetch()` for links).
 
+### Step 27 — --include-raw-html JSON surfacing fix ✅
+- 109 tests pass, 16 ignored, 0 fails.
+- **Problem**: `--include-raw-html` flowed correctly (CLI flag → `ExtractionOptions.include_raw_html` → webclaw populates `content.raw_html`, verified by T36 at the library layer), but the CLI JSON formatter `format_search_fetch_json` hand-built its output object and never read `er.content.raw_html`, so the field was silently dropped in `wa fetch --format json --include-raw-html`, `wa browser --format json --include-raw-html`, and `wa search --fetch --format json --include-raw-html`. Present since the initial commit; the README contract ("Attach raw HTML to result (JSON format)") was never honored.
+- **Fix**: one conditional line in the formatter's `Ok(er) =>` branch — `if let Some(ref raw_html) = er.content.raw_html { obj["raw_html"] = json!(raw_html); }`. Conditional so default JSON stays clean (raw HTML is large). Single change fixes all three commands since they share this formatter.
+- **Also**: re-exported `webclaw_core::{Content, Metadata}` from wa-extract alongside `ExtractionResult`. These types were already part of wa-extract's public surface (public field types of `ExtractionResult`) but not nameable; re-exporting them completes the surface so callers/tests can construct fixtures without depending on webclaw-core directly. No new abstraction.
+- **Tests added**: 2 unit tests in `wa-cli/src/main.rs::tests` — `fetch_json_surfaces_raw_html_when_present` and `fetch_json_omits_raw_html_when_absent`. These close the gap T36 left (T36 only tested the library layer, never CLI output). The crawl JSON path is intentionally untouched (raw HTML per crawled page would bloat crawl output and isn't part of the contract).
+- **Live verification**: `wa fetch --format json --include-raw-html https://example.com` → `raw_html` present; without the flag → absent.
+
 ## 19. Implementation insights & gotchas
 
 ### webclaw-fetch dependency
