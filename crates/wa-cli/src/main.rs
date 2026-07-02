@@ -408,6 +408,15 @@ fn format_extract_markdown(
         );
         out.push_str("\n```");
     }
+
+    // Raw HTML is only populated when the caller passes --include-raw-html;
+    // webclaw leaves it None otherwise. Append it in a fenced block so the
+    // rendered markdown stays readable.
+    if let Some(ref raw_html) = result.content.raw_html {
+        out.push_str("\n\n## Raw HTML\n\n```html\n");
+        out.push_str(raw_html);
+        out.push_str("\n```\n");
+    }
     out.push('\n');
     out
 }
@@ -495,13 +504,21 @@ fn format_compact_meta(
 /// as fetchable links. Everything else keeps its markdown syntax — headings,
 /// bold, code fences, and lists are all readable as-is.
 fn format_extract_text(result: &wa_extract::ExtractionResult) -> String {
-    if !result.content.plain_text.is_empty() {
-        return result.content.plain_text.clone();
+    let mut out = if !result.content.plain_text.is_empty() {
+        result.content.plain_text.clone()
+    } else {
+        // Fallback: remove image syntax from the markdown body.
+        // Everything else — headings, bold, links, code — is still
+        // meaningful as plain text.
+        remove_markdown_images(&result.content.markdown)
+    };
+
+    // Raw HTML is only populated when the caller passes --include-raw-html.
+    if let Some(ref raw_html) = result.content.raw_html {
+        out.push_str("\n\n--- Raw HTML ---\n");
+        out.push_str(raw_html);
     }
-    // Fallback: remove image syntax from the markdown body.
-    // Everything else — headings, bold, links, code — is still
-    // meaningful as plain text.
-    remove_markdown_images(&result.content.markdown)
+    out
 }
 
 /// Remove inline markdown images `![alt](url)`, replacing with `[alt](url)`
@@ -742,6 +759,12 @@ fn format_extract_llm(
         if let Some(idx) = text.rfind("\n\n## Structured Data\n\n```json\n") {
             return text[..idx].trim().to_string();
         }
+    }
+    // Raw HTML is only populated when the caller passes --include-raw-html.
+    // Appended at the end so it doesn't disrupt the LLM-optimized body.
+    if let Some(ref raw_html) = result.content.raw_html {
+        let trimmed = text.trim_end();
+        return format!("{trimmed}\n\n## Raw HTML\n\n```html\n{raw_html}\n```\n");
     }
     text
 }
@@ -1325,6 +1348,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                                         out.push_str(&format!("# {}\n\n", title));
                                     }
                                     out.push_str(&er.content.markdown);
+                                    if let Some(ref raw_html) = er.content.raw_html {
+                                        out.push_str("\n\n## Raw HTML\n\n```html\n");
+                                        out.push_str(raw_html);
+                                        out.push_str("\n```\n");
+                                    }
                                 }
                                 Err(e) => {
                                     out.push_str(&format!("**Error**: {}\n", e));

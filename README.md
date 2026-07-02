@@ -258,7 +258,7 @@ wa fetch 'https://example.com?foo=1&bar=2'
 | `--include <selector>` | none | CSS selectors to keep (repeatable) |
 | `--exclude <selector>` | none | CSS selectors to strip (repeatable) |
 | `--only-main-content` | off | Auto-detect and extract main content only |
-| `--include-raw-html` | off | Attach raw HTML to result (JSON format) |
+| `--include-raw-html` | off | Append the page's raw HTML to the output (all formats) |
 | `--include-structured-data` | off | Append JSON-LD structured data appendix |
 | `--endpoints` | off | Discover API endpoints instead of extracting content |
 | `--url-encoded` | off | Suppress shell-splitting warning |
@@ -284,7 +284,7 @@ wa browser https://spa.example.com --browser-endpoint "http://localhost:8000/htm
 | `--include <selector>` | none | CSS selectors to keep (repeatable) |
 | `--exclude <selector>` | none | CSS selectors to strip (repeatable) |
 | `--only-main-content` | off | Auto-detect main content |
-| `--include-raw-html` | off | Attach raw HTML to result (JSON format) |
+| `--include-raw-html` | off | Append the page's raw HTML to the output (all formats) |
 | `--include-structured-data` | off | Append JSON-LD structured data appendix |
 | `--url-encoded` | off | Suppress shell-splitting warning |
 
