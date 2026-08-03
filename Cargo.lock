@@ -3030,6 +3030,8 @@ dependencies = [
 name = "wa-extract"
 version = "0.1.0"
 dependencies = [
+ "regex",
+ "scraper",
  "tokio",
  "tracing",
  "wa-core",

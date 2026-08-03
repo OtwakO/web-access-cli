@@ -123,9 +123,9 @@ enum Commands {
         #[arg(long)]
         only_main_content: bool,
 
-        /// Include raw HTML in the result
+        /// Include extractor-selected HTML in the result
         #[arg(long)]
-        include_raw_html: bool,
+        include_extracted_html: bool,
 
         /// Include JSON-LD structured data appendix in markdown/llm output
         #[arg(long)]
@@ -200,9 +200,9 @@ enum Commands {
         #[arg(long)]
         only_main_content: bool,
 
-        /// Include raw HTML in the result
+        /// Include extractor-selected HTML in the result
         #[arg(long)]
-        include_raw_html: bool,
+        include_extracted_html: bool,
 
         /// Include JSON-LD structured data appendix in markdown/llm output
         #[arg(long)]
@@ -361,10 +361,10 @@ fn format_search_fetch_json(
                         obj["domain"] = serde_json::json!(er.domain_data.as_ref().map(|d| format!("{:?}", d.domain_type).to_lowercase()));
                         obj["structured_data"] = serde_json::json!(er.structured_data);
                         // Only surfaced when the caller opts in via
-                        // --include-raw-html; raw HTML is large, so it is
+                        // --include-extracted-html; raw HTML is large, so it is
                         // omitted from default JSON output.
                         if let Some(ref raw_html) = er.content.raw_html {
-                            obj["raw_html"] = serde_json::json!(raw_html);
+                            obj["extracted_html"] = serde_json::json!(raw_html);
                         }
                     }
                     Err(err) => {
@@ -378,6 +378,24 @@ fn format_search_fetch_json(
         .collect();
 
     serde_json::to_string_pretty(&combined).unwrap_or_else(|_| "[]".into())
+}
+
+/// Emit a conservative warning when the full document contradicts a sparse extraction.
+fn warn_if_extraction_incomplete(
+    url: &str,
+    html: &str,
+    extraction: &wa_extract::ExtractionResult,
+    quiet: bool,
+) {
+    if quiet {
+        return;
+    }
+    if let Some(diagnostic) = wa_extract::detect_incomplete_extraction(html, extraction) {
+        eprintln!(
+            "wa: warning: extracted content from {} is likely incomplete ({} text characters extracted; a semantic content region contains {}). Try `wa browser` or inspect `wa fetch --format raw`.",
+            url, diagnostic.extracted_text_chars, diagnostic.candidate_text_chars
+        );
+    }
 }
 
 /// Format extraction result as markdown.
@@ -409,11 +427,11 @@ fn format_extract_markdown(
         out.push_str("\n```");
     }
 
-    // Raw HTML is only populated when the caller passes --include-raw-html;
+    // Extracted HTML is only populated when the caller passes --include-extracted-html;
     // webclaw leaves it None otherwise. Append it in a fenced block so the
     // rendered markdown stays readable.
     if let Some(ref raw_html) = result.content.raw_html {
-        out.push_str("\n\n## Raw HTML\n\n```html\n");
+        out.push_str("\n\n## Extracted HTML\n\n```html\n");
         out.push_str(raw_html);
         out.push_str("\n```\n");
     }
@@ -513,9 +531,9 @@ fn format_extract_text(result: &wa_extract::ExtractionResult) -> String {
         remove_markdown_images(&result.content.markdown)
     };
 
-    // Raw HTML is only populated when the caller passes --include-raw-html.
+    // Extracted HTML is only populated when the caller passes --include-extracted-html.
     if let Some(ref raw_html) = result.content.raw_html {
-        out.push_str("\n\n--- Raw HTML ---\n");
+        out.push_str("\n\n--- Extracted HTML ---\n");
         out.push_str(raw_html);
     }
     out
@@ -754,17 +772,18 @@ fn format_extract_llm(
     let text = wa_extract::to_llm_text(result, Some(url));
     let text = bracket_links_in_llm_body(&text);
     let text = clean_links_footer_urls(&text);
-    let text = inject_fetched_url_into_llm(&text, fetched_url);
+    let mut text = inject_fetched_url_into_llm(&text, fetched_url);
     if !include_structured_data {
         if let Some(idx) = text.rfind("\n\n## Structured Data\n\n```json\n") {
-            return text[..idx].trim().to_string();
+            text.truncate(idx);
+            text = text.trim().to_string();
         }
     }
-    // Raw HTML is only populated when the caller passes --include-raw-html.
+    // Extracted HTML is only populated when the caller passes --include-extracted-html.
     // Appended at the end so it doesn't disrupt the LLM-optimized body.
     if let Some(ref raw_html) = result.content.raw_html {
         let trimmed = text.trim_end();
-        return format!("{trimmed}\n\n## Raw HTML\n\n```html\n{raw_html}\n```\n");
+        return format!("{trimmed}\n\n## Extracted HTML\n\n```html\n{raw_html}\n```\n");
     }
     text
 }
@@ -1224,7 +1243,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             include,
             exclude,
             only_main_content,
-            include_raw_html,
+            include_extracted_html,
             include_structured_data,
             url_encoded,
             endpoints,
@@ -1245,6 +1264,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let extractor =
                 wa_extract::Extractor::new(browser_profile, proxy_resolved.clone(), cookies_opt, 12);
 
+            let quality_check_enabled =
+                include.is_empty() && exclude.is_empty() && !only_main_content;
             let mut options = wa_extract::ExtractionOptions::default();
             if !include.is_empty() {
                 options.include_selectors = include.clone();
@@ -1255,7 +1276,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if only_main_content {
                 options.only_main_content = true;
             }
-            if include_raw_html {
+            if include_extracted_html {
                 options.include_raw_html = true;
             }
 
@@ -1287,6 +1308,22 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         .fetch_and_extract(&urls[0], &options)
                         .await
                         .map_err(|e| format!("{}", e))?;
+                    if quality_check_enabled
+                        && !quiet
+                        && wa_extract::needs_quality_probe(&result)
+                    {
+                        if let Ok((html, diagnostic_extraction)) = extractor
+                            .fetch_html_and_extract(&urls[0], &options)
+                            .await
+                        {
+                            warn_if_extraction_incomplete(
+                                &urls[0],
+                                &html,
+                                &diagnostic_extraction,
+                                quiet,
+                            );
+                        }
+                    }
 
                     let output = match fmt {
                         OutputFormat::Markdown => format_extract_markdown(&result, &urls[0], rewriter.apply(&urls[0]).as_deref(), !no_meta, include_structured_data),
@@ -1336,7 +1373,6 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     let results = extractor
                         .fetch_batch(&url_refs, concurrency_resolved, &options)
                         .await;
-
                     let output = match fmt {
                     OutputFormat::Markdown => {
                         let mut out = String::new();
@@ -1349,7 +1385,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                     out.push_str(&er.content.markdown);
                                     if let Some(ref raw_html) = er.content.raw_html {
-                                        out.push_str("\n\n## Raw HTML\n\n```html\n");
+                                        out.push_str("\n\n## Extracted HTML\n\n```html\n");
                                         out.push_str(raw_html);
                                         out.push_str("\n```\n");
                                     }
@@ -1416,7 +1452,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             include,
             exclude,
             only_main_content,
-            include_raw_html,
+            include_extracted_html,
             include_structured_data,
             url_encoded,
         } => {
@@ -1425,6 +1461,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 .map_err(|e| format!("{}", e))?;
             let endpoint = browser_endpoint.unwrap_or(cfg.browser_endpoint);
 
+            let quality_check_enabled =
+                include.is_empty() && exclude.is_empty() && !only_main_content;
             let mut options = wa_extract::ExtractionOptions::default();
             if !include.is_empty() {
                 options.include_selectors = include.clone();
@@ -1435,7 +1473,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if only_main_content {
                 options.only_main_content = true;
             }
-            if include_raw_html {
+            if include_extracted_html {
                 options.include_raw_html = true;
             }
 
@@ -1452,6 +1490,9 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     let result = wa_extract::extract_with_options(&html, Some(&urls[0]), &options)
                         .map_err(|e| format!("extraction failed: {}", e))?;
+                    if quality_check_enabled {
+                        warn_if_extraction_incomplete(&urls[0], &html, &result, quiet);
+                    }
 
                     let output = match fmt {
                         OutputFormat::Markdown => format_extract_markdown(&result, &urls[0], rewriter.apply(&urls[0]).as_deref(), !no_meta, include_structured_data),
@@ -1495,8 +1536,25 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     let mut results: Vec<wa_extract::BatchExtractResult> = Vec::new();
                     for url in &urls {
                         let result = match fetch_browser_html(&client, &endpoint, url).await {
-                            Ok(html) => wa_extract::extract_with_options(&html, Some(url), &options)
-                                .map_err(|e| format!("extraction failed: {}", e)),
+                            Ok(html) => {
+                                let extraction = wa_extract::extract_with_options(
+                                    &html,
+                                    Some(url),
+                                    &options,
+                                )
+                                .map_err(|e| format!("extraction failed: {}", e));
+                                if quality_check_enabled {
+                                    if let Ok(ref extraction) = extraction {
+                                        warn_if_extraction_incomplete(
+                                            url,
+                                            &html,
+                                            extraction,
+                                            quiet,
+                                        );
+                                    }
+                                }
+                                extraction
+                            }
                             Err(e) => Err(format!("{}", e)),
                         };
                         results.push(wa_extract::BatchExtractResult {
@@ -1541,6 +1599,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                                                 .unwrap_or_default(),
                                         );
                                         out.push_str("\n```");
+                                    }
+                                    if let Some(ref extracted_html) = er.content.raw_html {
+                                        out.push_str("\n\n## Extracted HTML\n\n```html\n");
+                                        out.push_str(extracted_html);
+                                        out.push_str("\n```\n");
                                     }
                                     out.push('\n');
                                 }
@@ -1822,6 +1885,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn include_extracted_html_is_the_only_supported_flag_name() {
+        for command in ["fetch", "browser"] {
+            let new_flag = Cli::try_parse_from([
+                "wa",
+                command,
+                "--include-extracted-html",
+                "https://example.com",
+            ]);
+            assert!(new_flag.is_ok());
+
+            let old_flag = Cli::try_parse_from([
+                "wa",
+                command,
+                "--include-raw-html",
+                "https://example.com",
+            ]);
+            assert!(old_flag.is_err());
+        }
+    }
+
+    #[test]
     fn bracket_links_restores_body_brackets() {
         let input = "Check out Last week for more info.\n\n## Links\n- Last week: https://example.com/last-week\n";
         let expected = "Check out [Last week] for more info.\n\n## Links\n- Last week: https://example.com/last-week\n";
@@ -1972,7 +2056,7 @@ mod tests {
         assert!(!looks_truncated("https://example.com/#section"));
     }
 
-    // ---- format_search_fetch_json: raw_html surfacing (T36 CLI gap) ----
+    // ---- format_search_fetch_json: extracted_html surfacing ----
 
     /// Minimal ExtractionResult fixture. webclaw's type has no Default, so we
     /// build only the fields the formatter reads.
@@ -2005,7 +2089,19 @@ mod tests {
     }
 
     #[test]
-    fn fetch_json_surfaces_raw_html_when_present() {
+    fn llm_keeps_extracted_html_when_structured_data_is_hidden() {
+        let mut result = extraction_fixture(Some("<p>selected</p>"));
+        result.structured_data = vec![serde_json::json!({"@type": "Article"})];
+
+        let output = format_extract_llm(&result, "https://example.com", None, false);
+
+        assert!(!output.contains("## Structured Data"));
+        assert!(output.contains("## Extracted HTML"));
+        assert!(output.contains("<p>selected</p>"));
+    }
+
+    #[test]
+    fn fetch_json_surfaces_extracted_html_when_present() {
         let search = vec![wa_core::types::SearchResult {
             title: "T".into(),
             url: "https://example.com".into(),
@@ -2018,11 +2114,11 @@ mod tests {
         }];
         let out = format_search_fetch_json(&search, &extracted);
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(parsed[0]["raw_html"], "<p>raw</p>");
+        assert_eq!(parsed[0]["extracted_html"], "<p>raw</p>");
     }
 
     #[test]
-    fn fetch_json_omits_raw_html_when_absent() {
+    fn fetch_json_omits_extracted_html_when_absent() {
         let search = vec![wa_core::types::SearchResult {
             title: "T".into(),
             url: "https://example.com".into(),
@@ -2035,6 +2131,6 @@ mod tests {
         }];
         let out = format_search_fetch_json(&search, &extracted);
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert!(parsed[0].get("raw_html").is_none());
+        assert!(parsed[0].get("extracted_html").is_none());
     }
 }

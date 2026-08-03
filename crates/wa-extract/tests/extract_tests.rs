@@ -326,11 +326,11 @@ async fn extract_only_main_content() {
     assert!(result.content.markdown.contains("primary content"));
 }
 
-// ---- T36: extract_raw_html_flag --------------------------------------------
+// ---- T36: extract_extracted_html_flag --------------------------------------------
 
 #[tokio::test]
 #[ignore = "webclaw v0.6.2+ blocks localhost (SSRF guard); requires non-localhost test server"]
-async fn extract_raw_html_flag() {
+async fn extract_extracted_html_flag() {
     let server = MockServer::start().await;
     let extractor = test_extractor();
 

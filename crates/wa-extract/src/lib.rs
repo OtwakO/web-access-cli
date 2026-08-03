@@ -10,6 +10,11 @@
 use std::sync::Arc;
 use wa_core::error::WaError;
 
+mod quality;
+pub use quality::{
+    IncompleteExtraction, detect_incomplete_extraction, needs_quality_probe,
+};
+
 // Re-export for callers
 pub use webclaw_core::endpoints::EndpointReport;
 pub use webclaw_core::extract;

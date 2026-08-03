@@ -9,6 +9,8 @@ wa-core = { workspace = true }
 webclaw-fetch = { workspace = true }
 webclaw-core = { git = "https://github.com/0xMassi/webclaw", rev = "ecfb72a" }
 tracing = { workspace = true }
+regex = { workspace = true }
+scraper = "0.22"
 
 [dev-dependencies]
 wiremock = { workspace = true }

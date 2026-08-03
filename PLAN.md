@@ -1053,7 +1053,7 @@ Tests live alongside code (`#[cfg(test)] mod tests { ... }` in the same file) fo
 | T33 | `extract_include_selectors` | Only selectors listed appear in output |
 | T34 | `extract_exclude_selectors` | Selectors listed are stripped from output |
 | T35 | `extract_only_main_content` | Only article/main content in output |
-| T36 | `extract_raw_html_flag` | include_raw_html=true populates raw_html field |
+| T36 | `extract_extracted_html_flag` | CLI `--include-extracted-html` maps to upstream `include_raw_html=true` and populates selected HTML |
 | T37 | `extract_llm_format` | to_llm_text produces token-optimized output |
 | T38 | `extract_invalid_url` | "not-a-valid-url" → WaError::InvalidUrl |
 | T39 | `extract_browser_profiles` | Chrome, Firefox, SafariIos, Random all work |
@@ -1700,7 +1700,7 @@ cargo run -- git https://github.com/serde-rs/serde --max-files 10
 - **Added** `fetch_browser_html()` helper in `wa-cli` — HTTP GET to endpoint, URL-encodes the target URL, returns rendered HTML.
 - **Added** re-exports `webclaw_core::extract` and `webclaw_core::extract_with_options` in `wa-extract` — enables extraction from raw HTML without going through `FetchClient`.
 - **Added** `reqwest` dependency to `wa-cli` Cargo.toml (already in workspace for `wa-search`).
-- **Command flags**: `--browser-endpoint` (override config), `--no-meta`, `--include`, `--exclude`, `--only-main-content`, `--include-raw-html` — same extraction options as `wa fetch`.
+- **Command flags**: `--browser-endpoint` (override config), `--no-meta`, `--include`, `--exclude`, `--only-main-content`, `--include-extracted-html` — same extraction options as `wa fetch`.
 - **Design insight**: no new crate for browser — the browser endpoint is a simple HTTP GET, and extraction reuses the existing `webclaw_core` pipeline via clean re-exports in `wa-extract`. Creating a `wa-browser` crate for ~10 lines of HTTP logic would violate the "no over-engineering" principle.
 - **Design insight**: `wa browser` and `wa fetch` share the same extraction pipeline and output formats. The only difference is the HTML source: `wa fetch` uses webclaw-fetch's TLS-fingerprinted HTTP stack; `wa browser` delegates rendering to an external service. This layering means any extraction improvements benefit both commands automatically.
 
@@ -1861,15 +1861,28 @@ cargo run -- git https://github.com/serde-rs/serde --max-files 10
 - **Live verification**: `wa crawl https://www.drissionpage.cn --depth 3 --max-pages 200` → **83 pages** (matches the pre-regression behavior), 1 HTTP request/page. Reddit extraction confirmed working on a real post.
 - **Design insight**: webclaw's `content.links` is the right tool for *content* link surfacing (LLM output), not for *crawl* frontier expansion. Crawl discovery needs the full document graph, including navigation siblings — which requires raw HTML. The fix keeps the single-request efficiency of Step 22 while restoring raw-HTML coverage, and gains rescue paths the old double-fetch never had (it used rescue-less `fetch()` for links).
 
-### Step 27 — --include-raw-html surfacing fix (all formats) ✅
-- 109 tests pass, 16 ignored, 0 fails.
-- **Problem**: `--include-raw-html` flowed correctly (CLI flag → `ExtractionOptions.include_raw_html` → webclaw populates `content.raw_html`, verified by T36 at the library layer), but the CLI formatters never read `er.content.raw_html`, so the field was silently dropped. The default format is markdown, so `wa fetch --include-raw-html <url>` (the natural usage) showed no raw HTML in any format. Present since the initial commit; the README contract was never honored.
-- **Fix (initial, incomplete)**: one conditional line in `format_search_fetch_json` surfaces `raw_html` as a top-level JSON field when present. Covered JSON only.
-- **Fix (complete)**: append `content.raw_html` in all text-based formatters when webclaw populated it. Markdown gets a fenced `## Raw HTML` ```html block; text appends `--- Raw HTML ---`; LLM appends a fenced block at the end (after structured-data stripping). Multi-URL markdown path (which built inline, not via the helper) updated too. No flag-threading needed: webclaw sets `content.raw_html = Some(...)` only when `--include-raw-html` is passed, so `Some`/`None` already gates the append. JSON keeps the conditional top-level `raw_html` field.
-- **Also**: re-exported `webclaw_core::{Content, Metadata}` from wa-extract alongside `ExtractionResult`. These types were already part of wa-extract's public surface (public field types of `ExtractionResult`) but not nameable; re-exporting them completes the surface so callers/tests can construct fixtures without depending on webclaw-core directly. No new abstraction.
-- **Tests**: 2 unit tests in `wa-cli/src/main.rs::tests` — `fetch_json_surfaces_raw_html_when_present` and `fetch_json_omits_raw_html_when_absent` (JSON layer). Text/markdown/llm surfacing is covered by live verification; the formatters are pure functions of `result.content.raw_html`, so the existing fixture pattern extends trivially if more coverage is wanted. The crawl JSON path is intentionally untouched (raw HTML per crawled page would bloat output and isn't part of the contract).
-- **Live verification**: `wa fetch [--format markdown|text|llm|json] --include-raw-html https://example.com` surfaces raw HTML in every format; absent without the flag.
-- **README**: updated `--include-raw-html` description from "Attach raw HTML to result (JSON format)" to "Append the page's raw HTML to the output (all formats)".
+### Step 27 — extracted-content HTML surfacing (all formats) ✅
+- 109 tests pass, 16 ignored, 0 fails at completion.
+- **Problem**: the original `--include-raw-html` flag flowed correctly into webclaw's `ExtractionOptions.include_raw_html`, but CLI formatters discarded `content.raw_html`; the default markdown output therefore appeared unchanged.
+- **Fix**: formatter output now includes the extractor-selected HTML in markdown, text, LLM, and JSON. This is selected content HTML, not the complete fetched document.
+- **Terminology correction (Step 28)**: the CLI flag was intentionally renamed without an alias to `--include-extracted-html`; human headings use “Extracted HTML,” and JSON uses `extracted_html`. The upstream webclaw field remains `content.raw_html` internally.
+
+### Step 28 — conservative incomplete-extraction diagnostics ✅
+- 116 tests pass, 16 ignored, 0 fails.
+- Added cohesive `wa-extract::quality` analyzer with one public diagnostic interface. It reports only when normalized visible extraction text is sparse (<200 non-whitespace characters) and a semantic content region (`article`, `main`, `[role=main]`, or `[itemprop=articleBody]`) has at least 500 visible characters and 4× the extracted text. Markdown-only results strip image/link destinations before counting; script/style/template/SVG payloads are excluded from candidate text.
+- Standard `<noscript>` fallback payloads are parsed as HTML fragments and evaluated by the same semantic rule. There are no domain names, framework IDs, challenge strings, or site-specific selectors.
+- `wa fetch` retains `fetch_and_extract_with_options()` and all PDF/LinkedIn/document rescue behavior. Only suspicious single-URL results receive a diagnostic `fetch_html_and_extract()` probe; its HTML and diagnostic extraction come from the same response. Ordinary and multi-URL fetches remain unchanged. `wa browser` already has a same-response HTML/extraction pair and adds no request.
+- Diagnostics warn on stderr, preserve stdout and exit status, honor `--quiet`, and are disabled when `--include`, `--exclude`, or `--only-main-content` makes sparse extraction intentional.
+- No automatic content replacement or browser fallback: detection and recovery remain separate, avoiding hidden behavior changes and overfitting.
+- Live verification: the known 4Gamers URL deterministically warns that 47 extracted text characters were selected while a semantic region contains 675; example.com produces no quality warning.
+
+## Issues & Fixes
+
+### [2026-08-03] Sparse extraction omitted richer semantic content
+- **Problem**: complete HTML documents could yield title-only output when the extractor ignored a substantially richer semantic content region, with no indication to the caller
+- **Fix**: added conservative document-vs-extraction diagnostics and stderr warning; renamed selected HTML flag/output to extracted HTML terminology
+- **Affected**: `crates/wa-extract/src/quality.rs`, `crates/wa-cli/src/main.rs`, `README.md`
+- **Watch out**: sparse single-URL fetch results incur one same-response diagnostic probe; multi-URL fetches and explicit selector modes intentionally skip diagnostics
 
 ## 19. Implementation insights & gotchas
 

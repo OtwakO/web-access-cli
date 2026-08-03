@@ -237,8 +237,11 @@ wa fetch https://rust-lang.org https://docs.rs
 # With CSS selector filtering
 wa fetch https://example.com --include "article" --exclude ".sidebar,nav"
 
-# With raw HTML included in result
-wa fetch https://example.com --include-raw-html
+# Include the extractor-selected content HTML alongside normal output
+wa fetch https://example.com --include-extracted-html
+
+# Return the complete upstream HTML without content extraction
+wa fetch https://example.com --format raw
 
 # Discover API endpoints in page + JS bundles (JSON output)
 wa fetch https://api.example.com --endpoints
@@ -258,7 +261,7 @@ wa fetch 'https://example.com?foo=1&bar=2'
 | `--include <selector>` | none | CSS selectors to keep (repeatable) |
 | `--exclude <selector>` | none | CSS selectors to strip (repeatable) |
 | `--only-main-content` | off | Auto-detect and extract main content only |
-| `--include-raw-html` | off | Append the page's raw HTML to the output (all formats) |
+| `--include-extracted-html` | off | Append extractor-selected content HTML to normal output |
 | `--include-structured-data` | off | Append JSON-LD structured data appendix |
 | `--endpoints` | off | Discover API endpoints instead of extracting content |
 | `--url-encoded` | off | Suppress shell-splitting warning |
@@ -284,12 +287,17 @@ wa browser https://spa.example.com --browser-endpoint "http://localhost:8000/htm
 | `--include <selector>` | none | CSS selectors to keep (repeatable) |
 | `--exclude <selector>` | none | CSS selectors to strip (repeatable) |
 | `--only-main-content` | off | Auto-detect main content |
-| `--include-raw-html` | off | Append the page's raw HTML to the output (all formats) |
+| `--include-extracted-html` | off | Append extractor-selected content HTML to normal output |
 | `--include-structured-data` | off | Append JSON-LD structured data appendix |
 | `--url-encoded` | off | Suppress shell-splitting warning |
 
 *`wa browser` and `wa fetch` share the same extraction pipeline — only the
-HTML source differs.*
+HTML source differs. `--format raw` returns the complete upstream document;
+`--include-extracted-html` preserves only the HTML selected by the extractor.*
+
+When a sparse extraction omits a substantially richer semantic content region,
+`wa fetch` and `wa browser` emit a conservative warning on stderr. The warning
+is suppressed by `--quiet`; normal output and exit status are unchanged.
 
 ### `wa crawl` — Crawl a Website
 
