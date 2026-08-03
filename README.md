@@ -296,8 +296,12 @@ HTML source differs. `--format raw` returns the complete upstream document;
 `--include-extracted-html` preserves only the HTML selected by the extractor.*
 
 When a sparse extraction omits a substantially richer semantic content region,
-`wa fetch` and `wa browser` emit a conservative warning on stderr. The warning
-is suppressed by `--quiet`; normal output and exit status are unchanged.
+a suspicious single-URL `wa fetch` or any `wa browser` result prepends an
+agent-visible warning to the returned context. Multi-URL `wa fetch` intentionally
+skips diagnostic probes. Markdown and LLM use a warning callout, text uses a
+warning banner, and JSON adds a structured `warnings` array to the affected
+result. The warning remains under `--quiet`; raw passthrough output stays
+byte-for-byte unchanged.
 
 ### `wa crawl` — Crawl a Website
 
@@ -449,9 +453,9 @@ want the original source rather than processed content.
 
 | Stream | Purpose |
 |--------|---------|
-| **stdout** | Clean formatted result |
-| **stderr** | Progress messages, warnings |
-| `--quiet` | Suppress all stderr |
+| **stdout** | Formatted result, including extraction-quality warnings when applicable |
+| **stderr** | Operational progress and shell-input warnings |
+| `--quiet` | Suppress stderr; result-quality warnings remain in stdout |
 | `--output PATH` | Write result to file |
 | Exit `0` | Success |
 | Exit `1` | Error |

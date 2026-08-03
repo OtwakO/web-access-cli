@@ -380,22 +380,85 @@ fn format_search_fetch_json(
     serde_json::to_string_pretty(&combined).unwrap_or_else(|_| "[]".into())
 }
 
-/// Emit a conservative warning when the full document contradicts a sparse extraction.
-fn warn_if_extraction_incomplete(
+/// Agent-visible evidence that extraction likely omitted richer page content.
+#[derive(Debug, Clone)]
+struct ExtractionQualityWarning {
+    result_index: usize,
+    url: String,
+    extracted_text_chars: usize,
+    candidate_text_chars: usize,
+}
+
+fn extraction_quality_warning(
+    result_index: usize,
     url: &str,
     html: &str,
     extraction: &wa_extract::ExtractionResult,
-    quiet: bool,
-) {
-    if quiet {
-        return;
+) -> Option<ExtractionQualityWarning> {
+    wa_extract::detect_incomplete_extraction(html, extraction).map(|diagnostic| {
+        ExtractionQualityWarning {
+            result_index,
+            url: url.to_owned(),
+            extracted_text_chars: diagnostic.extracted_text_chars,
+            candidate_text_chars: diagnostic.candidate_text_chars,
+        }
+    })
+}
+
+/// Prepend quality warnings without corrupting raw passthrough output.
+fn prepend_quality_warnings(
+    output: String,
+    format: OutputFormat,
+    warnings: &[ExtractionQualityWarning],
+) -> String {
+    if warnings.is_empty() || format == OutputFormat::Raw {
+        return output;
     }
-    if let Some(diagnostic) = wa_extract::detect_incomplete_extraction(html, extraction) {
-        eprintln!(
-            "wa: warning: extracted content from {} is likely incomplete ({} text characters extracted; a semantic content region contains {}). Try `wa browser` or inspect `wa fetch --format raw`.",
-            url, diagnostic.extracted_text_chars, diagnostic.candidate_text_chars
-        );
+
+    if format == OutputFormat::Json {
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&output) else {
+            return output;
+        };
+        let Some(results) = value.as_array_mut() else {
+            return output;
+        };
+        for warning in warnings {
+            if let Some(result) = results.get_mut(warning.result_index) {
+                result["warnings"] = serde_json::json!([{
+                    "code": "incomplete_extraction",
+                    "message": "Extracted content is likely incomplete. Use `wa browser` or inspect `wa fetch --format raw`.",
+                    "extracted_text_chars": warning.extracted_text_chars,
+                    "candidate_text_chars": warning.candidate_text_chars,
+                }]);
+            }
+        }
+        return serde_json::to_string_pretty(&value).unwrap_or(output);
     }
+
+    let mut prefix = String::new();
+    for warning in warnings {
+        match format {
+            OutputFormat::Markdown | OutputFormat::Llm => {
+                prefix.push_str(
+                    "> [!WARNING]\n> **Likely incomplete extraction** — the selected content may omit a richer part of the page.\n",
+                );
+                prefix.push_str(&format!(
+                    "> URL: {}  \n> Extracted text: {} characters · richer semantic region: {} characters  \n> Try `wa browser` or inspect `wa fetch --format raw`.\n\n",
+                    warning.url, warning.extracted_text_chars, warning.candidate_text_chars
+                ));
+            }
+            OutputFormat::Text => {
+                prefix.push_str("WARNING: LIKELY INCOMPLETE EXTRACTION\n");
+                prefix.push_str(&format!(
+                    "URL: {}\nExtracted text: {} characters; richer semantic region: {} characters.\nTry `wa browser` or inspect `wa fetch --format raw`.\n\n",
+                    warning.url, warning.extracted_text_chars, warning.candidate_text_chars
+                ));
+            }
+            OutputFormat::Json | OutputFormat::Raw => unreachable!(),
+        }
+    }
+    prefix.push_str(&output);
+    prefix
 }
 
 /// Format extraction result as markdown.
@@ -1308,22 +1371,26 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         .fetch_and_extract(&urls[0], &options)
                         .await
                         .map_err(|e| format!("{}", e))?;
-                    if quality_check_enabled
-                        && !quiet
+                    let quality_warnings = if quality_check_enabled
                         && wa_extract::needs_quality_probe(&result)
                     {
-                        if let Ok((html, diagnostic_extraction)) = extractor
+                        match extractor
                             .fetch_html_and_extract(&urls[0], &options)
                             .await
                         {
-                            warn_if_extraction_incomplete(
+                            Ok((html, diagnostic_extraction)) => extraction_quality_warning(
+                                0,
                                 &urls[0],
                                 &html,
                                 &diagnostic_extraction,
-                                quiet,
-                            );
+                            )
+                            .into_iter()
+                            .collect(),
+                            Err(_) => Vec::new(),
                         }
-                    }
+                    } else {
+                        Vec::new()
+                    };
 
                     let output = match fmt {
                         OutputFormat::Markdown => format_extract_markdown(&result, &urls[0], rewriter.apply(&urls[0]).as_deref(), !no_meta, include_structured_data),
@@ -1346,6 +1413,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     }
                     OutputFormat::Raw => unreachable!(),
                 };
+                let output = prepend_quality_warnings(output, fmt, &quality_warnings);
                 write_output(&output, output_file.as_deref())?;
                 }
             } else {
@@ -1490,9 +1558,13 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     let result = wa_extract::extract_with_options(&html, Some(&urls[0]), &options)
                         .map_err(|e| format!("extraction failed: {}", e))?;
-                    if quality_check_enabled {
-                        warn_if_extraction_incomplete(&urls[0], &html, &result, quiet);
-                    }
+                    let quality_warnings = if quality_check_enabled {
+                        extraction_quality_warning(0, &urls[0], &html, &result)
+                            .into_iter()
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
 
                     let output = match fmt {
                         OutputFormat::Markdown => format_extract_markdown(&result, &urls[0], rewriter.apply(&urls[0]).as_deref(), !no_meta, include_structured_data),
@@ -1515,6 +1587,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     }
                     OutputFormat::Raw => unreachable!(),
                 };
+                let output = prepend_quality_warnings(output, fmt, &quality_warnings);
                 write_output(&output, output_file.as_deref())?;
                 }
             } else {
@@ -1534,7 +1607,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         eprintln!("Browser fetching {} URLs...", urls.len());
                     }
                     let mut results: Vec<wa_extract::BatchExtractResult> = Vec::new();
-                    for url in &urls {
+                    let mut quality_warnings = Vec::new();
+                    for (result_index, url) in urls.iter().enumerate() {
                         let result = match fetch_browser_html(&client, &endpoint, url).await {
                             Ok(html) => {
                                 let extraction = wa_extract::extract_with_options(
@@ -1545,12 +1619,14 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                                 .map_err(|e| format!("extraction failed: {}", e));
                                 if quality_check_enabled {
                                     if let Ok(ref extraction) = extraction {
-                                        warn_if_extraction_incomplete(
+                                        if let Some(warning) = extraction_quality_warning(
+                                            result_index,
                                             url,
                                             &html,
                                             extraction,
-                                            quiet,
-                                        );
+                                        ) {
+                                            quality_warnings.push(warning);
+                                        }
                                     }
                                 }
                                 extraction
@@ -1643,6 +1719,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     OutputFormat::Json => format_search_fetch_json(&search_results, &results),
                     OutputFormat::Raw => unreachable!(),
                 };
+                let output = prepend_quality_warnings(output, fmt, &quality_warnings);
                 write_output(&output, output_file.as_deref())?;
                 }
             }
@@ -2054,6 +2131,86 @@ mod tests {
     #[test]
     fn looks_truncated_silent_on_hash_only() {
         assert!(!looks_truncated("https://example.com/#section"));
+    }
+
+    // ---- extraction-quality warning presentation ----
+
+    fn quality_warning_fixture() -> ExtractionQualityWarning {
+        ExtractionQualityWarning {
+            result_index: 0,
+            url: "https://example.com/article".into(),
+            extracted_text_chars: 47,
+            candidate_text_chars: 675,
+        }
+    }
+
+    #[test]
+    fn quality_warning_is_prepended_as_markdown_callout() {
+        let output = prepend_quality_warnings(
+            "# Extracted title\n\nShort body".into(),
+            OutputFormat::Markdown,
+            &[quality_warning_fixture()],
+        );
+
+        assert!(output.starts_with("> [!WARNING]\n> **Likely incomplete extraction**"));
+        assert!(output.contains("47"));
+        assert!(output.contains("675"));
+        assert!(output.ends_with("# Extracted title\n\nShort body"));
+    }
+
+    #[test]
+    fn quality_warning_is_prepended_as_text_banner() {
+        let output = prepend_quality_warnings(
+            "Short body".into(),
+            OutputFormat::Text,
+            &[quality_warning_fixture()],
+        );
+
+        assert!(output.starts_with("WARNING: LIKELY INCOMPLETE EXTRACTION"));
+        assert!(output.ends_with("Short body"));
+    }
+
+    #[test]
+    fn quality_warning_is_structured_in_json() {
+        let output = prepend_quality_warnings(
+            r#"[{"url":"https://example.com/article","status":"ok"}]"#.into(),
+            OutputFormat::Json,
+            &[quality_warning_fixture()],
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let warning = &parsed[0]["warnings"][0];
+
+        assert_eq!(warning["code"], "incomplete_extraction");
+        assert_eq!(warning["extracted_text_chars"], 47);
+        assert_eq!(warning["candidate_text_chars"], 675);
+    }
+
+    #[test]
+    fn json_warnings_are_associated_by_result_index_for_duplicate_urls() {
+        let output = prepend_quality_warnings(
+            r#"[{"url":"https://example.com/article","status":"error"},{"url":"https://example.com/article","status":"ok"}]"#.into(),
+            OutputFormat::Json,
+            &[ExtractionQualityWarning {
+                result_index: 1,
+                ..quality_warning_fixture()
+            }],
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+        assert!(parsed[0].get("warnings").is_none());
+        assert_eq!(parsed[1]["warnings"][0]["code"], "incomplete_extraction");
+    }
+
+    #[test]
+    fn raw_output_is_never_modified_by_quality_warnings() {
+        let raw = "<html><body>raw response</body></html>";
+        let output = prepend_quality_warnings(
+            raw.into(),
+            OutputFormat::Raw,
+            &[quality_warning_fixture()],
+        );
+
+        assert_eq!(output, raw);
     }
 
     // ---- format_search_fetch_json: extracted_html surfacing ----

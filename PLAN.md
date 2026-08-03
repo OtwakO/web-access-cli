@@ -1868,11 +1868,11 @@ cargo run -- git https://github.com/serde-rs/serde --max-files 10
 - **Terminology correction (Step 28)**: the CLI flag was intentionally renamed without an alias to `--include-extracted-html`; human headings use “Extracted HTML,” and JSON uses `extracted_html`. The upstream webclaw field remains `content.raw_html` internally.
 
 ### Step 28 — conservative incomplete-extraction diagnostics ✅
-- 116 tests pass, 16 ignored, 0 fails.
+- 121 tests pass, 16 ignored, 0 fails.
 - Added cohesive `wa-extract::quality` analyzer with one public diagnostic interface. It reports only when normalized visible extraction text is sparse (<200 non-whitespace characters) and a semantic content region (`article`, `main`, `[role=main]`, or `[itemprop=articleBody]`) has at least 500 visible characters and 4× the extracted text. Markdown-only results strip image/link destinations before counting; script/style/template/SVG payloads are excluded from candidate text.
 - Standard `<noscript>` fallback payloads are parsed as HTML fragments and evaluated by the same semantic rule. There are no domain names, framework IDs, challenge strings, or site-specific selectors.
 - `wa fetch` retains `fetch_and_extract_with_options()` and all PDF/LinkedIn/document rescue behavior. Only suspicious single-URL results receive a diagnostic `fetch_html_and_extract()` probe; its HTML and diagnostic extraction come from the same response. Ordinary and multi-URL fetches remain unchanged. `wa browser` already has a same-response HTML/extraction pair and adds no request.
-- Diagnostics warn on stderr, preserve stdout and exit status, honor `--quiet`, and are disabled when `--include`, `--exclude`, or `--only-main-content` makes sparse extraction intentional.
+- Diagnostics are part of returned context rather than stderr-only logging: Markdown/LLM prepend a `[!WARNING]` callout, text prepends a warning banner, and JSON adds a structured `warnings` array to the affected result. They remain visible under `--quiet`; raw passthrough remains unmodified. Explicit `--include`, `--exclude`, or `--only-main-content` modes disable diagnostics because sparse extraction may be intentional.
 - No automatic content replacement or browser fallback: detection and recovery remain separate, avoiding hidden behavior changes and overfitting.
 - Live verification: the known 4Gamers URL deterministically warns that 47 extracted text characters were selected while a semantic region contains 675; example.com produces no quality warning.
 
@@ -1883,6 +1883,12 @@ cargo run -- git https://github.com/serde-rs/serde --max-files 10
 - **Fix**: added conservative document-vs-extraction diagnostics and stderr warning; renamed selected HTML flag/output to extracted HTML terminology
 - **Affected**: `crates/wa-extract/src/quality.rs`, `crates/wa-cli/src/main.rs`, `README.md`
 - **Watch out**: sparse single-URL fetch results incur one same-response diagnostic probe; multi-URL fetches and explicit selector modes intentionally skip diagnostics
+
+### [2026-08-03] Agent tools could omit stderr quality warnings
+- **Problem**: some agent tool-call adapters return stdout without stderr, hiding incomplete-extraction warnings from the agent consuming the fetched content
+- **Fix**: moved quality diagnostics into structured returned context for Markdown, LLM, text, and JSON while preserving byte-for-byte raw passthrough
+- **Affected**: `crates/wa-cli/src/main.rs`, `README.md`, `PLAN.md`
+- **Watch out**: quality warnings intentionally remain visible under `--quiet`; JSON association is positional so duplicate URLs annotate the correct result
 
 ## 19. Implementation insights & gotchas
 
