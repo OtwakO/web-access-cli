@@ -1882,6 +1882,16 @@ cargo run -- git https://github.com/serde-rs/serde --max-files 10
 - Non-raw CLI output makes the failure agent-visible: Markdown/LLM callout, text banner, and JSON `{ "results": [], "warnings": [...] }`. Raw output remains the original SearXNG JSON and does not retry.
 - Live `nc-searxng` verification showed Brave suspended for rate limiting plus DuckDuckGo/Startpage CAPTCHA and Wikidata access denial; the CLI now reports this evidence rather than claiming there were simply no matches.
 
+### Step 30 — modular search providers 🔄
+- **Objective**: add native Degoog search while replacing the direct CLI-to-SearXNG coupling with a provider-neutral search module that can accept Tavily or Exa adapters later without changing CLI formatting or fetch integration.
+- **Architecture**: `wa-search::SearchClient` is the small public interface. It owns query validation, degraded-empty retry, URL deduplication, result limiting, and raw routing. Internal enum adapters translate native SearXNG and Degoog HTTP responses into a shared provider response; no public plugin trait or dynamic registry is introduced.
+- **Configuration contract**: replace top-level `searxng_url`, `WA_SEARXNG_URL`, and `--searxng-url` with typed `[search]`, `[search.searxng]`, and `[search.degoog]` sections plus `WA_SEARCH_PROVIDER`, `WA_SEARCH_URL`, `WA_DEGOOG_API_KEY`, `--search-provider`, `--search-url`, and `--search-api-key`. This is an intentional internal breaking change; SearXNG remains the default provider.
+- **Degoog contract**: native `GET /api/search?q=...&type=web&page=1`, optional bearer authentication, native result/engine-timing parsing, and provider-native one-request raw output. Degoog's optional SearXNG compatibility mode is not required.
+- **Data flow**: CLI/config resolve one `SearchProviderConfig` → `SearchClient` → selected adapter → normalized `SearchResponse` → existing output/fetch pipeline.
+- **Primary test seam**: focused tests through the provider-neutral `SearchClient` interface for request translation, result normalization, optional bearer auth, errors, raw preservation, limits, and degradation evidence. Config/CLI tests only prove routing and removal of legacy names.
+- **Out of scope**: provider fallback chains, Degoog SSE, suggestions, tabs/types, engine allowlists, `/api/search/retry`, MCP, Tavily, Exa, public plugins, secret stores, encryption, and exhaustive CLI/environment matrices.
+- **Current state**: architecture and primary-source API research are recorded. Next: add a failing Degoog/provider-neutral tracer test, modularize `wa-search`, then migrate config and CLI.
+
 ## Issues & Fixes
 
 ### [2026-08-03] Sparse extraction omitted richer semantic content
