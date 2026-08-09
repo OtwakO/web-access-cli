@@ -204,10 +204,10 @@ All commands support global flags: `--quiet`, `--format <fmt>`, `--output PATH`,
 wa search "rust async programming"
 
 # With auto-fetch and extraction of result pages
-wa search "rust async" --fetch --fetch-limit 5
+wa search --fetch --fetch-limit 5 "rust async"
 
 # Control result count
-wa search "rust async" --limit 20
+wa search --limit 20 "rust async"
 ```
 
 | Flag | Default | Description |
@@ -218,6 +218,12 @@ wa search "rust async" --limit 20
 | `--concurrency <n>` | `4` | Parallel fetches (with `--fetch`) |
 | `--searxng-url <url>` | config | Override SearXNG instance |
 | `--browser <profile>` | config | chrome, firefox, safari-ios, random |
+
+If SearXNG returns no results while reporting failed upstream engines, `wa search`
+retries once. If the retry is still degraded, Markdown/LLM and text return a
+prominent warning instead of silently reporting no matches; JSON returns an
+empty `results` array plus a structured `search_engines_unavailable` warning.
+Raw format remains the untouched SearXNG response.
 | `--proxy <url>` | config | SOCKS/HTTP proxy |
 | `--no-meta` | off | Omit metadata header from extracted pages |
 | `--cookie "k=v"` | none | Cookies (repeatable) |

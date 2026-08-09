@@ -325,6 +325,42 @@ fn format_search_json(results: &[wa_core::types::SearchResult]) -> String {
     serde_json::to_string_pretty(results).unwrap_or_else(|_| "[]".into())
 }
 
+fn format_degraded_search_warning(
+    format: OutputFormat,
+    warning: &wa_search::SearchDegradationWarning,
+) -> String {
+    let engine_summary = warning
+        .engines
+        .iter()
+        .map(|failure| format!("{}: {}", failure.engine, failure.reason))
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    match format {
+        OutputFormat::Markdown | OutputFormat::Llm => format!(
+            "> [!WARNING]\n> **Search engines unavailable** — SearXNG returned no results because its upstream engines did not respond successfully.\n> Engines: {}  \n> The request was retried once. Try again later or use another SearXNG instance.\n",
+            engine_summary
+        ),
+        OutputFormat::Text => format!(
+            "WARNING: SEARCH ENGINES UNAVAILABLE\nSearXNG returned no results because upstream engines failed.\nEngines: {}\nThe request was retried once. Try again later or use another SearXNG instance.\n",
+            engine_summary
+        ),
+        OutputFormat::Json => serde_json::to_string_pretty(&serde_json::json!({
+            "results": [],
+            "warnings": [{
+                "code": "search_engines_unavailable",
+                "message": "SearXNG returned no results because its upstream engines failed. The request was retried once.",
+                "engines": warning.engines.iter().map(|failure| serde_json::json!({
+                    "engine": failure.engine,
+                    "reason": failure.reason,
+                })).collect::<Vec<_>>(),
+            }]
+        }))
+        .unwrap_or_else(|_| "{\"results\":[],\"warnings\":[]}".into()),
+        OutputFormat::Raw => unreachable!(),
+    }
+}
+
 /// Format search + extracted results as JSON.
 fn format_search_fetch_json(
     results: &[wa_core::types::SearchResult],
@@ -1143,10 +1179,14 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
 
-            let results = client.search(&query_str, limit).await?;
+            let search_response = client.search_with_diagnostics(&query_str, limit).await?;
+            let results = search_response.results;
 
             if results.is_empty() {
-                if !quiet {
+                if let Some(warning) = search_response.warning {
+                    let output = format_degraded_search_warning(fmt, &warning);
+                    write_output(&output, output_file.as_deref())?;
+                } else if !quiet {
                     eprintln!("No results found.");
                 }
                 return Ok(());
@@ -2131,6 +2171,49 @@ mod tests {
     #[test]
     fn looks_truncated_silent_on_hash_only() {
         assert!(!looks_truncated("https://example.com/#section"));
+    }
+
+    // ---- degraded search warning presentation ----
+
+    fn degraded_search_fixture() -> wa_search::SearchDegradationWarning {
+        wa_search::SearchDegradationWarning {
+            engines: vec![
+                wa_search::UnresponsiveEngine {
+                    engine: "brave".into(),
+                    reason: "too many requests".into(),
+                },
+                wa_search::UnresponsiveEngine {
+                    engine: "duckduckgo".into(),
+                    reason: "CAPTCHA".into(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn degraded_search_warning_is_agent_visible_in_markdown() {
+        let output = format_degraded_search_warning(
+            OutputFormat::Markdown,
+            &degraded_search_fixture(),
+        );
+
+        assert!(output.starts_with("> [!WARNING]\n> **Search engines unavailable**"));
+        assert!(output.contains("brave: too many requests"));
+        assert!(output.contains("retried once"));
+    }
+
+    #[test]
+    fn degraded_search_warning_is_structured_in_json() {
+        let output =
+            format_degraded_search_warning(OutputFormat::Json, &degraded_search_fixture());
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["results"], serde_json::json!([]));
+        assert_eq!(
+            parsed["warnings"][0]["code"],
+            "search_engines_unavailable"
+        );
+        assert_eq!(parsed["warnings"][0]["engines"][0]["engine"], "brave");
     }
 
     // ---- extraction-quality warning presentation ----

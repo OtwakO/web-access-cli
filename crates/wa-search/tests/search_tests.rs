@@ -124,6 +124,120 @@ async fn parse_missing_content_field() {
     assert_eq!(results[0].snippet, "");
 }
 
+#[tokio::test]
+async fn degraded_empty_response_retries_once_and_recovers() {
+    let server = MockServer::start().await;
+    let client = SearXNGClient::new(server.uri());
+
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "results": [],
+            "unresponsive_engines": [["brave", "too many requests"]]
+        })))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "results": [{
+                "title": "Recovered",
+                "url": "https://example.com/recovered",
+                "content": "Retry succeeded"
+            }],
+            "unresponsive_engines": []
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let response = client.search_with_diagnostics("test", 10).await.unwrap();
+    assert_eq!(response.results.len(), 1);
+    assert!(response.warning.is_none());
+}
+
+#[tokio::test]
+async fn degraded_empty_then_healthy_empty_returns_no_warning() {
+    let server = MockServer::start().await;
+    let client = SearXNGClient::new(server.uri());
+
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "results": [],
+            "unresponsive_engines": [["brave", "too many requests"]]
+        })))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "results": [],
+            "unresponsive_engines": []
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let response = client.search_with_diagnostics("test", 10).await.unwrap();
+    assert!(response.results.is_empty());
+    assert!(response.warning.is_none());
+}
+
+#[tokio::test]
+async fn zero_limit_does_not_retry_nonempty_upstream_results() {
+    let server = MockServer::start().await;
+    let client = SearXNGClient::new(server.uri());
+
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "results": [{
+                "title": "Available result",
+                "url": "https://example.com/result",
+                "content": "Found upstream"
+            }],
+            "unresponsive_engines": [["duckduckgo", "CAPTCHA"]]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let response = client.search_with_diagnostics("test", 0).await.unwrap();
+    assert!(response.results.is_empty());
+    assert!(response.warning.is_none());
+}
+
+#[tokio::test]
+async fn degraded_empty_response_retries_once_then_returns_warning() {
+    let server = MockServer::start().await;
+    let client = SearXNGClient::new(server.uri());
+
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "results": [],
+            "unresponsive_engines": [
+                ["brave", "too many requests"],
+                ["duckduckgo", "CAPTCHA"]
+            ]
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let response = client.search_with_diagnostics("test", 10).await.unwrap();
+    assert!(response.results.is_empty());
+    let warning = response.warning.expect("degraded search warning");
+    assert_eq!(warning.engines.len(), 2);
+    assert_eq!(warning.engines[0].engine, "brave");
+    assert_eq!(warning.engines[0].reason, "too many requests");
+}
+
 // ---- T19: parse_malformed_json ---------------------------------------------
 
 #[tokio::test]

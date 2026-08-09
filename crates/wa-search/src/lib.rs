@@ -6,6 +6,26 @@
 use wa_core::error::WaError;
 use wa_core::types::SearchResult;
 
+/// Search response plus evidence that upstream engines were unavailable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchResponse {
+    pub results: Vec<SearchResult>,
+    pub warning: Option<SearchDegradationWarning>,
+}
+
+/// Upstream engine failures that prevented SearXNG from producing results.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchDegradationWarning {
+    pub engines: Vec<UnresponsiveEngine>,
+}
+
+/// One SearXNG engine that did not answer successfully.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnresponsiveEngine {
+    pub engine: String,
+    pub reason: String,
+}
+
 /// Client for a SearXNG instance.
 pub struct SearXNGClient {
     /// Base URL of the SearXNG instance (e.g. `http://localhost:8080`)
@@ -40,21 +60,57 @@ impl SearXNGClient {
     }
 
     /// Execute a search and return deduplicated results.
-    ///
-    /// SearXNG may return the same URL under different categories;
-    /// only the first occurrence is kept.
-    ///
-    /// Returns `WaError::Search` on HTTP failures or bad JSON.
-    /// Returns `WaError::RateLimit` on HTTP 429.
     pub async fn search(
         &self,
         query: &str,
         limit: usize,
     ) -> Result<Vec<SearchResult>, WaError> {
+        Ok(self.search_with_diagnostics(query, limit).await?.results)
+    }
+
+    /// Search once, retrying a degraded empty response exactly once.
+    ///
+    /// A normal empty response is returned immediately. If SearXNG reports
+    /// unresponsive engines and no results, one retry is made. A second empty
+    /// response preserves the engine failures as an agent-visible diagnostic.
+    pub async fn search_with_diagnostics(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<SearchResponse, WaError> {
         if query.trim().is_empty() {
             return Err(WaError::Search("empty query".into()));
         }
 
+        let first = self.search_once(query, limit).await?;
+        if first.upstream_had_results || first.unresponsive_engines.is_empty() {
+            return Ok(SearchResponse {
+                results: first.results,
+                warning: None,
+            });
+        }
+
+        let retry = self.search_once(query, limit).await?;
+        if retry.upstream_had_results || retry.unresponsive_engines.is_empty() {
+            return Ok(SearchResponse {
+                results: retry.results,
+                warning: None,
+            });
+        }
+
+        Ok(SearchResponse {
+            results: retry.results,
+            warning: Some(SearchDegradationWarning {
+                engines: retry
+                    .unresponsive_engines
+                    .into_iter()
+                    .map(|(engine, reason)| UnresponsiveEngine { engine, reason })
+                    .collect(),
+            }),
+        })
+    }
+
+    async fn search_once(&self, query: &str, limit: usize) -> Result<ParsedSearch, WaError> {
         let url = self.build_search_url(query);
         let resp = self.client.get(&url).send().await.map_err(|e| {
             if e.is_timeout() {
@@ -67,13 +123,9 @@ impl SearXNGClient {
         })?;
 
         let status = resp.status();
-
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            return Err(WaError::RateLimit(
-                "SearXNG rate limited".into(),
-            ));
+            return Err(WaError::RateLimit("SearXNG rate limited".into()));
         }
-
         if !status.is_success() {
             return Err(WaError::Search(format!(
                 "HTTP {} from SearXNG",
@@ -84,16 +136,12 @@ impl SearXNGClient {
         let body = resp.text().await.map_err(|e| {
             WaError::Search(format!("failed to read response body: {}", e))
         })?;
+        let parsed: SearXNGResponse = serde_json::from_str(&body)
+            .map_err(|e| WaError::Search(format!("invalid JSON from SearXNG: {}", e)))?;
 
-        let parsed: SearXNGResponse =
-            serde_json::from_str(&body).map_err(|e| {
-                WaError::Search(format!("invalid JSON from SearXNG: {}", e))
-            })?;
-
-        // Deduplicate by URL (SearXNG sometimes returns the same page under
-        // multiple categories).
+        let upstream_had_results = !parsed.results.is_empty();
         let mut seen = std::collections::HashSet::new();
-        let results: Vec<SearchResult> = parsed
+        let results = parsed
             .results
             .into_iter()
             .filter(|r| seen.insert(r.url.clone()))
@@ -110,7 +158,11 @@ impl SearXNGClient {
             .take(limit)
             .collect();
 
-        Ok(results)
+        Ok(ParsedSearch {
+            results,
+            upstream_had_results,
+            unresponsive_engines: parsed.unresponsive_engines,
+        })
     }
 
     /// Execute a search and return the raw JSON response body.
@@ -197,10 +249,19 @@ fn urlencoding(s: &str) -> String {
     result
 }
 
+struct ParsedSearch {
+    results: Vec<SearchResult>,
+    upstream_had_results: bool,
+    unresponsive_engines: Vec<(String, String)>,
+}
+
 /// The JSON shape returned by SearXNG.
 #[derive(serde::Deserialize)]
 struct SearXNGResponse {
+    #[serde(default)]
     results: Vec<SearXNGResultItem>,
+    #[serde(default)]
+    unresponsive_engines: Vec<(String, String)>,
 }
 
 #[derive(serde::Deserialize)]

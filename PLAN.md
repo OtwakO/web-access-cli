@@ -1868,13 +1868,19 @@ cargo run -- git https://github.com/serde-rs/serde --max-files 10
 - **Terminology correction (Step 28)**: the CLI flag was intentionally renamed without an alias to `--include-extracted-html`; human headings use “Extracted HTML,” and JSON uses `extracted_html`. The upstream webclaw field remains `content.raw_html` internally.
 
 ### Step 28 — conservative incomplete-extraction diagnostics ✅
-- 121 tests pass, 16 ignored, 0 fails.
+- 127 tests pass, 16 ignored, 0 fails after degraded-search handling.
 - Added cohesive `wa-extract::quality` analyzer with one public diagnostic interface. It reports only when normalized visible extraction text is sparse (<200 non-whitespace characters) and a semantic content region (`article`, `main`, `[role=main]`, or `[itemprop=articleBody]`) has at least 500 visible characters and 4× the extracted text. Markdown-only results strip image/link destinations before counting; script/style/template/SVG payloads are excluded from candidate text.
 - Standard `<noscript>` fallback payloads are parsed as HTML fragments and evaluated by the same semantic rule. There are no domain names, framework IDs, challenge strings, or site-specific selectors.
 - `wa fetch` retains `fetch_and_extract_with_options()` and all PDF/LinkedIn/document rescue behavior. Only suspicious single-URL results receive a diagnostic `fetch_html_and_extract()` probe; its HTML and diagnostic extraction come from the same response. Ordinary and multi-URL fetches remain unchanged. `wa browser` already has a same-response HTML/extraction pair and adds no request.
 - Diagnostics are part of returned context rather than stderr-only logging: Markdown/LLM prepend a `[!WARNING]` callout, text prepends a warning banner, and JSON adds a structured `warnings` array to the affected result. They remain visible under `--quiet`; raw passthrough remains unmodified. Explicit `--include`, `--exclude`, or `--only-main-content` modes disable diagnostics because sparse extraction may be intentional.
 - No automatic content replacement or browser fallback: detection and recovery remain separate, avoiding hidden behavior changes and overfitting.
 - Live verification: the known 4Gamers URL deterministically warns that 47 extracted text characters were selected while a semantic region contains 675; example.com produces no quality warning.
+
+### Step 29 — degraded SearXNG retry and warning ✅
+- Added `SearchResponse` as a diagnostic-preserving search interface while retaining the existing `search() -> Vec<SearchResult>` compatibility method.
+- A normal empty result returns immediately. An upstream-empty response with `unresponsive_engines` retries exactly once; a successful or healthy-empty retry returns without warning, while a second degraded-empty response retains engine names/reasons. Retry eligibility is based on upstream result presence, so `--limit 0` cannot manufacture a degraded state.
+- Non-raw CLI output makes the failure agent-visible: Markdown/LLM callout, text banner, and JSON `{ "results": [], "warnings": [...] }`. Raw output remains the original SearXNG JSON and does not retry.
+- Live `nc-searxng` verification showed Brave suspended for rate limiting plus DuckDuckGo/Startpage CAPTCHA and Wikidata access denial; the CLI now reports this evidence rather than claiming there were simply no matches.
 
 ## Issues & Fixes
 
@@ -1889,6 +1895,12 @@ cargo run -- git https://github.com/serde-rs/serde --max-files 10
 - **Fix**: moved quality diagnostics into structured returned context for Markdown, LLM, text, and JSON while preserving byte-for-byte raw passthrough
 - **Affected**: `crates/wa-cli/src/main.rs`, `README.md`, `PLAN.md`
 - **Watch out**: quality warnings intentionally remain visible under `--quiet`; JSON association is positional so duplicate URLs annotate the correct result
+
+### [2026-08-03] SearXNG engine failures looked like valid empty searches
+- **Problem**: SearXNG could return HTTP 200 with `results: []` when every productive engine was rate-limited, blocked by CAPTCHA, or denied; `wa search` discarded `unresponsive_engines` and misleadingly reported no results
+- **Fix**: retry degraded empty responses once, then return structured engine-failure context when the retry remains empty; normal empty searches do not retry and raw passthrough remains untouched
+- **Affected**: `crates/wa-search/src/lib.rs`, `crates/wa-search/tests/search_tests.rs`, `crates/wa-cli/src/main.rs`, `README.md`, `PLAN.md`
+- **Watch out**: successful JSON remains the existing result array, while degraded-empty JSON uses `{ "results": [], "warnings": [...] }`; search options currently need to precede the trailing query argument
 
 ## 19. Implementation insights & gotchas
 
