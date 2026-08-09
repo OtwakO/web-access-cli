@@ -6,7 +6,7 @@
 //! - **--quiet**: suppress all stderr output (AI agent mode)
 //! - Exit codes: 0 = success, 1 = runtime error, 2 = usage error
 
-use clap::{Parser, Subcommand, crate_version};
+use clap::{Parser, Subcommand, ValueEnum, crate_version};
 use wa_core::types::OutputFormat;
 
 // ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Search the web via SearXNG
+    /// Search the web through the configured provider
     Search {
         /// Search query (combines all arguments)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -60,9 +60,17 @@ enum Commands {
         #[arg(long, default_value = "10")]
         limit: usize,
 
-        /// SearXNG instance URL (overrides config/env)
+        /// Search provider: searxng or degoog
+        #[arg(long, value_enum)]
+        search_provider: Option<SearchProviderArg>,
+
+        /// Search provider instance URL (overrides config/env)
         #[arg(long)]
-        searxng_url: Option<String>,
+        search_url: Option<String>,
+
+        /// Search provider API key (Degoog bearer token)
+        #[arg(long)]
+        search_api_key: Option<String>,
 
         /// Browser profile: chrome, firefox, safari-ios, random
         #[arg(long)]
@@ -278,7 +286,22 @@ enum Commands {
 }
 
 /// CLI-level output format that converts to wa_core::OutputFormat.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum SearchProviderArg {
+    Searxng,
+    Degoog,
+}
+
+impl From<SearchProviderArg> for wa_core::config::SearchProvider {
+    fn from(value: SearchProviderArg) -> Self {
+        match value {
+            SearchProviderArg::Searxng => Self::Searxng,
+            SearchProviderArg::Degoog => Self::Degoog,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
 enum OutputFormatArg {
     Markdown,
     Llm,
@@ -330,28 +353,28 @@ fn format_degraded_search_warning(
     warning: &wa_search::SearchDegradationWarning,
 ) -> String {
     let engine_summary = warning
-        .engines
+        .upstreams
         .iter()
-        .map(|failure| format!("{}: {}", failure.engine, failure.reason))
+        .map(|failure| format!("{}: {}", failure.name, failure.reason))
         .collect::<Vec<_>>()
         .join("; ");
 
     match format {
         OutputFormat::Markdown | OutputFormat::Llm => format!(
-            "> [!WARNING]\n> **Search engines unavailable** — SearXNG returned no results because its upstream engines did not respond successfully.\n> Engines: {}  \n> The request was retried once. Try again later or use another SearXNG instance.\n",
+            "> [!WARNING]\n> **Search engines unavailable** — the selected search provider returned no results because its upstream engines did not respond successfully.\n> Engines: {}  \n> The request was retried once. Try again later or use another provider instance.\n",
             engine_summary
         ),
         OutputFormat::Text => format!(
-            "WARNING: SEARCH ENGINES UNAVAILABLE\nSearXNG returned no results because upstream engines failed.\nEngines: {}\nThe request was retried once. Try again later or use another SearXNG instance.\n",
+            "WARNING: SEARCH ENGINES UNAVAILABLE\nThe selected search provider returned no results because upstream engines failed.\nEngines: {}\nThe request was retried once. Try again later or use another provider instance.\n",
             engine_summary
         ),
         OutputFormat::Json => serde_json::to_string_pretty(&serde_json::json!({
             "results": [],
             "warnings": [{
                 "code": "search_engines_unavailable",
-                "message": "SearXNG returned no results because its upstream engines failed. The request was retried once.",
-                "engines": warning.engines.iter().map(|failure| serde_json::json!({
-                    "engine": failure.engine,
+                "message": "The selected search provider returned no results because its upstream engines failed. The request was retried once.",
+                "engines": warning.upstreams.iter().map(|failure| serde_json::json!({
+                    "engine": failure.name,
                     "reason": failure.reason,
                 })).collect::<Vec<_>>(),
             }]
@@ -1134,7 +1157,12 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     out.push_str("Config file: not found (HOME not set)\n\n");
                 }
-                out.push_str(&serde_json::to_string_pretty(&config)?);
+                let mut display_config = serde_json::to_value(&config)?;
+                if config.search.degoog.api_key.is_some() {
+                    display_config["search"]["degoog"]["api_key"] =
+                        serde_json::Value::String("<redacted>".into());
+                }
+                out.push_str(&serde_json::to_string_pretty(&display_config)?);
                 out.push('\n');
                 write_output(&out, output_file.as_deref())?;
             }
@@ -1146,13 +1174,24 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             fetch_limit,
             concurrency,
             limit,
-            searxng_url,
+            search_provider,
+            search_url,
+            search_api_key,
             browser,
             proxy,
             cookies,
             no_meta,
             include_structured_data,
         } => {
+            if query
+                .iter()
+                .any(|part| part == "--searxng-url" || part.starts_with("--searxng-url="))
+            {
+                return Err(
+                    "--searxng-url has been removed; use --search-url and optionally --search-provider searxng"
+                        .into(),
+                );
+            }
             let query_str = query.join(" ");
             if query_str.trim().is_empty() {
                 return Err("empty search query".into());
@@ -1162,16 +1201,44 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let cfg = wa_core::config::Config::load(config_arg)?;
             let rewriter = wa_core::url_rewrite::UrlRewriter::new(&cfg.url_rewrites)
                 .map_err(|e| format!("{}", e))?;
-            let searxng = searxng_url.unwrap_or(cfg.searxng_url);
+            let provider = search_provider.map(Into::into).unwrap_or(cfg.search.provider);
+            let configured_url = match provider {
+                wa_core::config::SearchProvider::Searxng => cfg.search.searxng.url,
+                wa_core::config::SearchProvider::Degoog => cfg.search.degoog.url,
+            };
+            let search_url = search_url.unwrap_or(configured_url);
+            let provider_name = match provider {
+                wa_core::config::SearchProvider::Searxng => "searxng",
+                wa_core::config::SearchProvider::Degoog => "degoog",
+            };
+            let provider_config = match provider {
+                wa_core::config::SearchProvider::Searxng => {
+                    if search_api_key.is_some() {
+                        return Err("--search-api-key is only supported by degoog".into());
+                    }
+                    wa_search::SearchProviderConfig::Searxng {
+                        url: search_url.clone(),
+                    }
+                }
+                wa_core::config::SearchProvider::Degoog => {
+                    wa_search::SearchProviderConfig::Degoog {
+                        url: search_url.clone(),
+                        api_key: search_api_key.or(cfg.search.degoog.api_key),
+                    }
+                }
+            };
             let browser_resolved = browser.unwrap_or(cfg.browser_profile);
             let proxy_resolved = proxy.or(cfg.proxy);
             let concurrency_resolved = concurrency.unwrap_or(4);
 
             if !quiet {
-                eprintln!("Searching: \"{}\" via {}", query_str, searxng);
+                eprintln!(
+                    "Searching: \"{}\" via {} at {}",
+                    query_str, provider_name, search_url
+                );
             }
 
-            let client = wa_search::SearXNGClient::new(searxng);
+            let client = wa_search::SearchClient::new(provider_config);
 
             if fmt == OutputFormat::Raw {
                 let raw_json = client.search_raw(&query_str).await?;
@@ -2177,13 +2244,13 @@ mod tests {
 
     fn degraded_search_fixture() -> wa_search::SearchDegradationWarning {
         wa_search::SearchDegradationWarning {
-            engines: vec![
-                wa_search::UnresponsiveEngine {
-                    engine: "brave".into(),
+            upstreams: vec![
+                wa_search::UnavailableUpstream {
+                    name: "brave".into(),
                     reason: "too many requests".into(),
                 },
-                wa_search::UnresponsiveEngine {
-                    engine: "duckduckgo".into(),
+                wa_search::UnavailableUpstream {
+                    name: "duckduckgo".into(),
                     reason: "CAPTCHA".into(),
                 },
             ],

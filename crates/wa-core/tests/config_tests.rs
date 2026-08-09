@@ -7,7 +7,12 @@ mod tests {
     #[test]
     fn config_defaults() {
         let cfg = Config::default();
-        assert_eq!(cfg.searxng_url, "http://localhost:8080");
+        assert_eq!(
+            cfg.search.provider,
+            wa_core::config::SearchProvider::Searxng
+        );
+        assert_eq!(cfg.search.searxng.url, "http://localhost:8080");
+        assert_eq!(cfg.search.degoog.url, "http://localhost:4444");
         assert_eq!(cfg.fetch_timeout_secs, 12);
         assert_eq!(cfg.browser_profile, "chrome");
         assert_eq!(cfg.proxy, None);
@@ -27,16 +32,18 @@ mod tests {
         std::fs::write(
             &path,
             r#"
-searxng_url = "https://searx.example.com"
 browser_profile = "firefox"
 max_files = 50
+
+[search.searxng]
+url = "https://searx.example.com"
 "#,
         )
         .unwrap();
 
-        temp_env::with_var("WA_SEARXNG_URL", None::<&str>, || {
+        temp_env::with_var("WA_SEARCH_URL", None::<&str>, || {
             let cfg = Config::load(Some(&path)).unwrap();
-            assert_eq!(cfg.searxng_url, "https://searx.example.com");
+            assert_eq!(cfg.search.searxng.url, "https://searx.example.com");
             assert_eq!(cfg.browser_profile, "firefox");
             assert_eq!(cfg.max_files, 50);
             // these should still be defaults
@@ -53,11 +60,11 @@ max_files = 50
         let path = dir.path().join("partial.toml");
         std::fs::write(&path, r#"max_files = 10"#).unwrap();
 
-        temp_env::with_var("WA_SEARXNG_URL", None::<&str>, || {
+        temp_env::with_var("WA_SEARCH_URL", None::<&str>, || {
             let cfg = Config::load(Some(&path)).unwrap();
             assert_eq!(cfg.max_files, 10);
             // everything else should be default
-            assert_eq!(cfg.searxng_url, "http://localhost:8080");
+            assert_eq!(cfg.search.searxng.url, "http://localhost:8080");
             assert_eq!(cfg.retries, 3);
         });
     }
@@ -70,7 +77,7 @@ max_files = 50
         let path = dir.path().join("bad.toml");
         std::fs::write(&path, "not valid toml {{{").unwrap();
 
-        temp_env::with_var("WA_SEARXNG_URL", None::<&str>, || {
+        temp_env::with_var("WA_SEARCH_URL", None::<&str>, || {
             let err = Config::load(Some(&path)).unwrap_err();
             let msg = format!("{}", err);
             assert!(msg.contains("invalid TOML") || msg.contains("config error"));
@@ -83,22 +90,57 @@ max_files = 50
     fn config_env_override() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cfg.toml");
-        std::fs::write(&path, r#"searxng_url = "https://from-file.example.com""#).unwrap();
+        std::fs::write(
+            &path,
+            "[search.searxng]\nurl = \"https://from-file.example.com\"",
+        )
+        .unwrap();
 
-        temp_env::with_var("WA_SEARXNG_URL", Some("https://from-env.example.com"), || {
-            let cfg = Config::load(Some(&path)).unwrap();
-            assert_eq!(cfg.searxng_url, "https://from-env.example.com");
-        });
+        temp_env::with_var(
+            "WA_SEARCH_URL",
+            Some("https://from-env.example.com"),
+            || {
+                let cfg = Config::load(Some(&path)).unwrap();
+                assert_eq!(cfg.search.searxng.url, "https://from-env.example.com");
+            },
+        );
+    }
+
+    #[test]
+    fn generic_search_url_applies_to_cli_selected_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfg.toml");
+        std::fs::write(&path, "").unwrap();
+
+        temp_env::with_vars(
+            [
+                ("WA_SEARCH_PROVIDER", None::<&str>),
+                ("WA_SEARCH_URL", Some("https://env-search.example.com")),
+            ],
+            || {
+                let cfg = Config::load(Some(&path)).unwrap();
+                assert_eq!(cfg.search.searxng.url, "https://env-search.example.com");
+                assert_eq!(cfg.search.degoog.url, "https://env-search.example.com");
+            },
+        );
     }
 
     // ---- T5b: config_env_override_max_pages ---------------------------------
 
     #[test]
     fn config_env_override_max_pages() {
-        temp_env::with_var("WA_MAX_PAGES", Some("250"), || {
-            let cfg = Config::load(None).unwrap();
-            assert_eq!(cfg.max_pages, 250);
-        });
+        let dir = tempfile::tempdir().unwrap();
+        temp_env::with_vars(
+            [
+                ("HOME", dir.path().to_str()),
+                ("XDG_CONFIG_HOME", None::<&str>),
+                ("WA_MAX_PAGES", Some("250")),
+            ],
+            || {
+                let cfg = Config::load(None).unwrap();
+                assert_eq!(cfg.max_pages, 250);
+            },
+        );
     }
 
     // ---- T6: config_cli_override --------------------------------------------
@@ -109,7 +151,7 @@ max_files = 50
         let path = dir.path().join("cfg.toml");
         std::fs::write(&path, r#"max_files = 30"#).unwrap();
 
-        temp_env::with_var("WA_SEARXNG_URL", None::<&str>, || {
+        temp_env::with_var("WA_SEARCH_URL", None::<&str>, || {
             let mut cfg = Config::load(Some(&path)).unwrap();
             assert_eq!(cfg.max_files, 30);
 
@@ -124,7 +166,7 @@ max_files = 50
     #[test]
     fn config_explicit_path_not_found() {
         let path = std::path::Path::new("/tmp/does-not-exist-923847.toml");
-        temp_env::with_var("WA_SEARXNG_URL", None::<&str>, || {
+        temp_env::with_var("WA_SEARCH_URL", None::<&str>, || {
             let err = Config::load(Some(path)).unwrap_err();
             let msg = format!("{}", err);
             assert!(
@@ -145,9 +187,9 @@ max_files = 50
         let dir = tempfile::tempdir().unwrap();
         temp_env::with_var("HOME", Some(dir.path().to_str().unwrap()), || {
             temp_env::with_var("XDG_CONFIG_HOME", None::<&str>, || {
-                temp_env::with_var("WA_SEARXNG_URL", None::<&str>, || {
+                temp_env::with_var("WA_SEARCH_URL", None::<&str>, || {
                     let cfg = Config::load(None).unwrap();
-                    assert_eq!(cfg.searxng_url, "http://localhost:8080");
+                    assert_eq!(cfg.search.searxng.url, "http://localhost:8080");
                     assert_eq!(cfg.retries, 3);
                 });
             });
@@ -167,7 +209,10 @@ max_files = 50
 
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(contents.contains("# wa configuration"));
-        assert!(contents.contains("searxng_url"));
+        assert!(contents.contains("[search]"));
+        assert!(contents.contains("[search.searxng]"));
+        assert!(contents.contains("[search.degoog]"));
+        assert!(!contents.contains("searxng_url"));
         assert!(contents.contains("browser_profile"));
         assert!(contents.contains("proxy"));
     }
@@ -178,7 +223,7 @@ max_files = 50
     fn config_init_already_exists() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("existing.toml");
-        std::fs::write(&path, "searxng_url = \"https://example.com\"").unwrap();
+        std::fs::write(&path, "[search.searxng]\nurl = \"https://example.com\"").unwrap();
 
         let err = Config::init_config_file(Some(&path)).unwrap_err();
         let msg = format!("{}", err);
@@ -194,13 +239,12 @@ max_files = 50
         std::fs::write(
             &path,
             r#"
-searxng_url = "https://example.com"
 typo_field = "oops"
 "#,
         )
         .unwrap();
 
-        temp_env::with_var("WA_SEARXNG_URL", None::<&str>, || {
+        temp_env::with_var("WA_SEARCH_URL", None::<&str>, || {
             let err = Config::load(Some(&path)).unwrap_err();
             let msg = format!("{}", err);
             assert!(
@@ -211,6 +255,37 @@ typo_field = "oops"
         });
     }
 
+    #[test]
+    fn search_provider_config_loads_degoog_and_rejects_legacy_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let degoog_path = dir.path().join("degoog.toml");
+        std::fs::write(
+            &degoog_path,
+            r#"
+[search]
+provider = "degoog"
+
+[search.degoog]
+url = "https://degoog.example.com"
+api_key = "file-token"
+"#,
+        )
+        .unwrap();
+
+        let cfg = Config::load(Some(&degoog_path)).unwrap();
+        assert_eq!(cfg.search.provider, wa_core::config::SearchProvider::Degoog);
+        assert_eq!(cfg.search.degoog.url, "https://degoog.example.com");
+        assert_eq!(cfg.search.degoog.api_key.as_deref(), Some("file-token"));
+
+        let legacy_path = dir.path().join("legacy.toml");
+        std::fs::write(
+            &legacy_path,
+            r#"searxng_url = "https://legacy.example.com""#,
+        )
+        .unwrap();
+        assert!(Config::load(Some(&legacy_path)).is_err());
+    }
+
     // ---- T12: output_format_serialization -----------------------------------
 
     #[test]
@@ -219,16 +294,13 @@ typo_field = "oops"
         let json = serde_json::to_string(&wa_core::types::OutputFormat::Markdown).unwrap();
         assert_eq!(json, r#""markdown""#);
 
-        let parsed: wa_core::types::OutputFormat =
-            serde_json::from_str(r#""llm""#).unwrap();
+        let parsed: wa_core::types::OutputFormat = serde_json::from_str(r#""llm""#).unwrap();
         assert_eq!(parsed, wa_core::types::OutputFormat::Llm);
 
-        let parsed: wa_core::types::OutputFormat =
-            serde_json::from_str(r#""text""#).unwrap();
+        let parsed: wa_core::types::OutputFormat = serde_json::from_str(r#""text""#).unwrap();
         assert_eq!(parsed, wa_core::types::OutputFormat::Text);
 
-        let parsed: wa_core::types::OutputFormat =
-            serde_json::from_str(r#""json""#).unwrap();
+        let parsed: wa_core::types::OutputFormat = serde_json::from_str(r#""json""#).unwrap();
         assert_eq!(parsed, wa_core::types::OutputFormat::Json);
     }
 }

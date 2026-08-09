@@ -1,10 +1,10 @@
+#[path = "config/search.rs"]
+mod search;
+
+pub use search::{DegoogConfig, SearchConfig, SearchProvider, SearxngConfig};
+
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-
-/// Default SearXNG instance URL.
-fn default_searxng_url() -> String {
-    "http://localhost:8080".into()
-}
 
 /// Default fetch timeout in seconds.
 fn default_fetch_timeout_secs() -> u64 {
@@ -53,7 +53,7 @@ fn default_max_pages() -> usize {
 ///   1. Hard-coded defaults (above)
 ///   2. Config file at `~/.config/wa/config.toml` (auto-discovered)
 ///      or `--config FILE` (explicit, replaces auto path)
-///   3. Environment variables (`WA_SEARXNG_URL`, …)
+///   3. Environment variables (`WA_SEARCH_PROVIDER`, …)
 ///   4. CLI flags (highest precedence — applied by the CLI crate)
 ///
 /// The CLI crate resolves CLI flags against the effective config from
@@ -64,9 +64,9 @@ fn default_max_pages() -> usize {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// SearXNG instance URL (used by `wa search` only).
-    #[serde(default = "default_searxng_url")]
-    pub searxng_url: String,
+    /// Active search provider and provider-specific settings.
+    #[serde(default)]
+    pub search: SearchConfig,
 
     /// HTTP fetch timeout in seconds.
     #[serde(default = "default_fetch_timeout_secs")]
@@ -118,7 +118,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            searxng_url: default_searxng_url(),
+            search: SearchConfig::default(),
             fetch_timeout_secs: default_fetch_timeout_secs(),
             browser_profile: default_browser_profile(),
             proxy: None,
@@ -173,17 +173,13 @@ impl Config {
                 ))
             })?;
             let file_cfg: Self = toml::from_str(&contents).map_err(|e| {
-                crate::error::WaError::Config(format!(
-                    "invalid TOML in {}: {}",
-                    path.display(),
-                    e
-                ))
+                crate::error::WaError::Config(format!("invalid TOML in {}: {}", path.display(), e))
             })?;
             config.overlay_file(file_cfg);
         }
 
         // Layer 3: environment variables
-        config.apply_env_overrides();
+        config.apply_env_overrides()?;
 
         Ok(config)
     }
@@ -208,9 +204,7 @@ impl Config {
                         .ok()
                         .map(|h| PathBuf::from(h).join(".config"))
                 })
-                .or_else(|| {
-                    dirs::config_dir()
-                })?;
+                .or_else(dirs::config_dir)?;
             Some(base.join("wa").join("config.toml"))
         }
     }
@@ -232,9 +226,7 @@ impl Config {
         let target = match path {
             Some(p) => p.to_path_buf(),
             None => Self::default_config_path().ok_or_else(|| {
-                crate::error::WaError::Config(
-                    "could not determine config directory".into(),
-                )
+                crate::error::WaError::Config("could not determine config directory".into())
             })?,
         };
 
@@ -270,7 +262,7 @@ impl Config {
     /// unconditionally copied — this is a simple file-over-defaults
     /// merge, not a smart merge.
     fn overlay_file(&mut self, file_cfg: Self) {
-        self.searxng_url = file_cfg.searxng_url;
+        self.search = file_cfg.search;
         self.fetch_timeout_secs = file_cfg.fetch_timeout_secs;
         self.browser_profile = file_cfg.browser_profile;
         self.proxy = file_cfg.proxy;
@@ -285,9 +277,16 @@ impl Config {
 
     /// Override fields from `WA_*` environment variables.
     /// These override both defaults and config file values.
-    fn apply_env_overrides(&mut self) {
-        if let Ok(v) = std::env::var("WA_SEARXNG_URL") {
-            self.searxng_url = v;
+    fn apply_env_overrides(&mut self) -> Result<(), crate::error::WaError> {
+        if let Ok(value) = std::env::var("WA_SEARCH_PROVIDER") {
+            self.search.provider = value.parse().map_err(crate::error::WaError::Config)?;
+        }
+        if let Ok(value) = std::env::var("WA_SEARCH_URL") {
+            self.search.searxng.url = value.clone();
+            self.search.degoog.url = value;
+        }
+        if let Ok(value) = std::env::var("WA_DEGOOG_API_KEY") {
+            self.search.degoog.api_key = if value.is_empty() { None } else { Some(value) };
         }
         if let Ok(v) = std::env::var("WA_BROWSER_PROFILE") {
             self.browser_profile = v;
@@ -308,6 +307,7 @@ impl Config {
                 self.max_pages = n;
             }
         }
+        Ok(())
     }
 }
 
@@ -315,9 +315,6 @@ impl Config {
 const CONFIG_TEMPLATE: &str = r##"# wa configuration
 # Uncomment and edit any of the settings below.
 # Priority: CLI flags > environment variables > this file > defaults
-
-# SearXNG instance URL (used by `wa search`)
-# searxng_url = "http://localhost:8080"
 
 # Browser profile for TLS fingerprinting: chrome, firefox, safari-ios, random
 # browser_profile = "chrome"
@@ -360,4 +357,16 @@ const CONFIG_TEMPLATE: &str = r##"# wa configuration
 # [[url_rewrites]]
 # match_regex = '^https?://twitter\\.com/'
 # replace = 'https://nitter.net/'
+
+# Search provider: searxng or degoog
+# Provider tables stay last because TOML table headers remain active.
+# [search]
+# provider = "searxng"
+#
+# [search.searxng]
+# url = "http://localhost:8080"
+#
+# [search.degoog]
+# url = "http://localhost:4444"
+# api_key = "optional-bearer-token"
 "##;

@@ -1882,7 +1882,7 @@ cargo run -- git https://github.com/serde-rs/serde --max-files 10
 - Non-raw CLI output makes the failure agent-visible: Markdown/LLM callout, text banner, and JSON `{ "results": [], "warnings": [...] }`. Raw output remains the original SearXNG JSON and does not retry.
 - Live `nc-searxng` verification showed Brave suspended for rate limiting plus DuckDuckGo/Startpage CAPTCHA and Wikidata access denial; the CLI now reports this evidence rather than claiming there were simply no matches.
 
-### Step 30 — modular search providers 🔄
+### Step 30 — modular search providers ✅
 - **Objective**: add native Degoog search while replacing the direct CLI-to-SearXNG coupling with a provider-neutral search module that can accept Tavily or Exa adapters later without changing CLI formatting or fetch integration.
 - **Architecture**: `wa-search::SearchClient` is the small public interface. It owns query validation, degraded-empty retry, URL deduplication, result limiting, and raw routing. Internal enum adapters translate native SearXNG and Degoog HTTP responses into a shared provider response; no public plugin trait or dynamic registry is introduced.
 - **Configuration contract**: replace top-level `searxng_url`, `WA_SEARXNG_URL`, and `--searxng-url` with typed `[search]`, `[search.searxng]`, and `[search.degoog]` sections plus `WA_SEARCH_PROVIDER`, `WA_SEARCH_URL`, `WA_DEGOOG_API_KEY`, `--search-provider`, `--search-url`, and `--search-api-key`. This is an intentional internal breaking change; SearXNG remains the default provider.
@@ -1890,7 +1890,8 @@ cargo run -- git https://github.com/serde-rs/serde --max-files 10
 - **Data flow**: CLI/config resolve one `SearchProviderConfig` → `SearchClient` → selected adapter → normalized `SearchResponse` → existing output/fetch pipeline.
 - **Primary test seam**: focused tests through the provider-neutral `SearchClient` interface for request translation, result normalization, optional bearer auth, errors, raw preservation, limits, and degradation evidence. Config/CLI tests only prove routing and removal of legacy names.
 - **Out of scope**: provider fallback chains, Degoog SSE, suggestions, tabs/types, engine allowlists, `/api/search/retry`, MCP, Tavily, Exa, public plugins, secret stores, encryption, and exhaustive CLI/environment matrices.
-- **Current state**: architecture and primary-source API research are recorded. Next: add a failing Degoog/provider-neutral tracer test, modularize `wa-search`, then migrate config and CLI.
+- **Verification**: 135 workspace tests pass, 0 fail, 16 are ignored; workspace build succeeds. Clippy reaches only the unrelated pre-existing `UrlRewriter` derivable-default warning. Live SearXNG verification through the generic config returned either results or the existing structured degraded warning with zero quiet stderr; both removed `--searxng-url` forms now fail loudly.
+- **Current state**: complete. Provider-neutral `SearchClient`, native SearXNG/Degoog adapters, typed provider config, generic CLI routing, raw preservation, bearer authentication, redacted effective config output, generalized diagnostics, documentation, and focused tests are implemented. Next: commit the verified feature.
 
 ## Issues & Fixes
 
@@ -1911,6 +1912,12 @@ cargo run -- git https://github.com/serde-rs/serde --max-files 10
 - **Fix**: retry degraded empty responses once, then return structured engine-failure context when the retry remains empty; normal empty searches do not retry and raw passthrough remains untouched
 - **Affected**: `crates/wa-search/src/lib.rs`, `crates/wa-search/tests/search_tests.rs`, `crates/wa-cli/src/main.rs`, `README.md`, `PLAN.md`
 - **Watch out**: successful JSON remains the existing result array, while degraded-empty JSON uses `{ "results": [], "warnings": [...] }`; search options currently need to precede the trailing query argument
+
+### [2026-08-09] Search implementation was coupled directly to SearXNG
+- **Problem**: CLI, config, HTTP parsing, retry policy, and diagnostics all depended on SearXNG-specific types and names, so adding Degoog or future providers would require cross-cutting changes
+- **Fix**: introduced a provider-neutral `SearchClient` with shared policy and compact native SearXNG/Degoog adapters; replaced legacy SearXNG-specific configuration with generic typed provider selection and redacted credential display
+- **Affected**: `crates/wa-search`, `crates/wa-core/src/config.rs`, `crates/wa-core/src/config/search.rs`, `crates/wa-cli`, `README.md`, `docs/research/degoog-search-api.md`, `PLAN.md`
+- **Watch out**: raw search JSON is intentionally provider-native; Degoog API keys may be supplied by CLI, environment, or plain-text config but are never printed by `wa config`; provider tables must remain after root TOML fields
 
 ## 19. Implementation insights & gotchas
 

@@ -4,7 +4,10 @@ use std::process::Command;
 
 /// Helper: get the wa binary path
 fn wa_bin() -> Command {
-    Command::cargo_bin("wa").unwrap()
+    let config_home = tempfile::tempdir().unwrap().keep();
+    let mut command = Command::cargo_bin("wa").unwrap();
+    command.env("XDG_CONFIG_HOME", config_home);
+    command
 }
 
 // ---- T60: cli_help ---------------------------------------------------------
@@ -37,7 +40,62 @@ fn cli_config_command() {
     cmd.arg("config");
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("searxng_url"));
+        .stdout(predicate::str::contains("\"provider\": \"searxng\""));
+}
+
+#[test]
+fn search_help_uses_generic_provider_flags_and_removes_legacy_flag() {
+    let mut cmd = wa_bin();
+    cmd.args(["search", "--help"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("--search-provider"))
+        .stdout(predicate::str::contains("--search-url"))
+        .stdout(predicate::str::contains("--search-api-key"))
+        .stdout(predicate::str::contains("--searxng-url").not());
+}
+
+#[test]
+fn removed_searxng_flag_fails_loudly() {
+    let mut cmd = wa_bin();
+    cmd.args([
+        "search",
+        "--searxng-url",
+        "https://legacy.example.com",
+        "rust",
+    ]);
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("--searxng-url has been removed"));
+
+    let mut equals_cmd = wa_bin();
+    equals_cmd.args([
+        "search",
+        "--searxng-url=https://legacy.example.com",
+        "rust",
+    ]);
+    equals_cmd
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--searxng-url has been removed"));
+}
+
+#[test]
+fn cli_config_redacts_degoog_api_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.toml");
+    std::fs::write(
+        &config_path,
+        "[search]\nprovider = \"degoog\"\n[search.degoog]\napi_key = \"secret-token\"\n",
+    )
+    .unwrap();
+
+    let mut cmd = wa_bin();
+    cmd.args(["--config", config_path.to_str().unwrap(), "config"]);
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("<redacted>"))
+        .stdout(predicate::str::contains("secret-token").not());
 }
 
 // ---- T69: cli_missing_command ----------------------------------------------

@@ -71,7 +71,6 @@ wa --config /path/to/custom.toml search "query"
 
 ```toml
 # ~/.config/wa/config.toml
-searxng_url = "http://localhost:8080"       # SearXNG instance URL
 browser_profile = "chrome"                   # chrome | firefox | safari-ios | random
 browser_endpoint = "http://localhost:8000/html?url="  # base URL for wa browser
 proxy = "socks5://127.0.0.1:9050"           # SOCKS/HTTP proxy (optional)
@@ -81,13 +80,26 @@ retry_delay_ms = 500                         # base delay (exponential backoff +
 max_file_size = 102400                       # max bytes per file from git clone
 max_files = 100                              # max text files from git clone
 max_pages = 100                              # max pages for wa crawl
+
+# Keep provider tables after root settings because TOML tables remain active.
+[search]
+provider = "searxng"                         # searxng | degoog
+
+[search.searxng]
+url = "http://localhost:8080"
+
+[search.degoog]
+url = "http://localhost:4444"
+# api_key = "optional-bearer-token"          # stored as plain text
 ```
 
 ### Environment Variables
 
 | Variable | Config Field |
 |----------|-------------|
-| `WA_SEARXNG_URL` | `searxng_url` |
+| `WA_SEARCH_PROVIDER` | `search.provider` |
+| `WA_SEARCH_URL` | URL for the selected provider |
+| `WA_DEGOOG_API_KEY` | `search.degoog.api_key` |
 | `WA_BROWSER_PROFILE` | `browser_profile` |
 | `WA_BROWSER_ENDPOINT` | `browser_endpoint` |
 | `WA_PROXY` | `proxy` (empty string = unset) |
@@ -208,6 +220,9 @@ wa search --fetch --fetch-limit 5 "rust async"
 
 # Control result count
 wa search --limit 20 "rust async"
+
+# Use native Degoog search
+wa search --search-provider degoog --search-url http://localhost:4444 "rust async"
 ```
 
 | Flag | Default | Description |
@@ -216,15 +231,24 @@ wa search --limit 20 "rust async"
 | `--fetch-limit <n>` | `3` | Max results to fetch (with `--fetch`) |
 | `--limit <n>` | `10` | Search results to return |
 | `--concurrency <n>` | `4` | Parallel fetches (with `--fetch`) |
-| `--searxng-url <url>` | config | Override SearXNG instance |
+| `--search-provider <provider>` | config (`searxng` if unset) | Select `searxng` or `degoog` |
+| `--search-url <url>` | config | Override the selected provider instance |
+| `--search-api-key <token>` | config/env | Degoog bearer token |
 | `--browser <profile>` | config | chrome, firefox, safari-ios, random |
-
-If SearXNG returns no results while reporting failed upstream engines, `wa search`
-retries once. If the retry is still degraded, Markdown/LLM and text return a
-prominent warning instead of silently reporting no matches; JSON returns an
-empty `results` array plus a structured `search_engines_unavailable` warning.
-Raw format remains the untouched SearXNG response.
 | `--proxy <url>` | config | SOCKS/HTTP proxy |
+
+If the selected provider returns no results while reporting failed upstream
+engines, `wa search` retries once. If the retry is still degraded, Markdown/LLM
+and text return a prominent warning; JSON returns an empty `results` array plus
+a structured `search_engines_unavailable` warning. Raw format makes one request
+and returns the untouched provider-native JSON.
+
+Degoog support uses its native `/api/search` endpoint; its optional “Serve the
+SearXNG API shape” setting is not required. Protected Degoog instances accept a
+bearer token through `--search-api-key`, `WA_DEGOOG_API_KEY`, or
+`search.degoog.api_key`. CLI arguments may appear in process listings and config
+keys are stored as plain text, so prefer the environment variable when sharing
+shell history or config output.
 | `--no-meta` | off | Omit metadata header from extracted pages |
 | `--cookie "k=v"` | none | Cookies (repeatable) |
 | `--include-structured-data` | off | Append JSON-LD structured data appendix |

@@ -1,13 +1,17 @@
-use wa_search::SearXNGClient;
-use wiremock::matchers::{method, path, query_param};
+use wa_search::{SearchClient, SearchProviderConfig};
+use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+fn searxng_client(url: String) -> SearchClient {
+    SearchClient::new(SearchProviderConfig::Searxng { url })
+}
 
 // ---- T14: build_search_url -------------------------------------------------
 
 #[tokio::test]
 async fn build_search_url() {
     let server = MockServer::start().await;
-    let client = SearXNGClient::new(server.uri());
+    let client = searxng_client(server.uri());
 
     // Start a mock that will catch the request so we can inspect the URL
     Mock::given(method("GET"))
@@ -15,9 +19,9 @@ async fn build_search_url() {
         .and(query_param("q", "rust async"))
         .and(query_param("format", "json"))
         .and(query_param("categories", "general"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(
-            serde_json::json!({ "results": [] }),
-        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({ "results": [] })),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -31,14 +35,14 @@ async fn build_search_url() {
 #[tokio::test]
 async fn build_search_url_with_spaces() {
     let server = MockServer::start().await;
-    let client = SearXNGClient::new(server.uri());
+    let client = searxng_client(server.uri());
 
     Mock::given(method("GET"))
         .and(path("/search"))
         .and(query_param("q", "hello world"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(
-            serde_json::json!({ "results": [] }),
-        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({ "results": [] })),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -52,7 +56,7 @@ async fn build_search_url_with_spaces() {
 #[tokio::test]
 async fn parse_success_response() {
     let server = MockServer::start().await;
-    let client = SearXNGClient::new(server.uri());
+    let client = searxng_client(server.uri());
 
     Mock::given(method("GET"))
         .and(path("/search"))
@@ -82,13 +86,13 @@ async fn parse_success_response() {
 #[tokio::test]
 async fn parse_empty_results() {
     let server = MockServer::start().await;
-    let client = SearXNGClient::new(server.uri());
+    let client = searxng_client(server.uri());
 
     Mock::given(method("GET"))
         .and(path("/search"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(
-            serde_json::json!({ "results": [] }),
-        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({ "results": [] })),
+        )
         .mount(&server)
         .await;
 
@@ -101,21 +105,19 @@ async fn parse_empty_results() {
 #[tokio::test]
 async fn parse_missing_content_field() {
     let server = MockServer::start().await;
-    let client = SearXNGClient::new(server.uri());
+    let client = searxng_client(server.uri());
 
     Mock::given(method("GET"))
         .and(path("/search"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(
-            serde_json::json!({
-                "results": [
-                    {
-                        "title": "A Page",
-                        "url": "https://example.com",
-                        "snippet": "This is a snippet."
-                    }
-                ]
-            }),
-        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "results": [
+                {
+                    "title": "A Page",
+                    "url": "https://example.com",
+                    "snippet": "This is a snippet."
+                }
+            ]
+        })))
         .mount(&server)
         .await;
 
@@ -127,7 +129,7 @@ async fn parse_missing_content_field() {
 #[tokio::test]
 async fn degraded_empty_response_retries_once_and_recovers() {
     let server = MockServer::start().await;
-    let client = SearXNGClient::new(server.uri());
+    let client = searxng_client(server.uri());
 
     Mock::given(method("GET"))
         .and(path("/search"))
@@ -161,7 +163,7 @@ async fn degraded_empty_response_retries_once_and_recovers() {
 #[tokio::test]
 async fn degraded_empty_then_healthy_empty_returns_no_warning() {
     let server = MockServer::start().await;
-    let client = SearXNGClient::new(server.uri());
+    let client = searxng_client(server.uri());
 
     Mock::given(method("GET"))
         .and(path("/search"))
@@ -191,7 +193,7 @@ async fn degraded_empty_then_healthy_empty_returns_no_warning() {
 #[tokio::test]
 async fn zero_limit_does_not_retry_nonempty_upstream_results() {
     let server = MockServer::start().await;
-    let client = SearXNGClient::new(server.uri());
+    let client = searxng_client(server.uri());
 
     Mock::given(method("GET"))
         .and(path("/search"))
@@ -215,7 +217,7 @@ async fn zero_limit_does_not_retry_nonempty_upstream_results() {
 #[tokio::test]
 async fn degraded_empty_response_retries_once_then_returns_warning() {
     let server = MockServer::start().await;
-    let client = SearXNGClient::new(server.uri());
+    let client = searxng_client(server.uri());
 
     Mock::given(method("GET"))
         .and(path("/search"))
@@ -233,9 +235,105 @@ async fn degraded_empty_response_retries_once_then_returns_warning() {
     let response = client.search_with_diagnostics("test", 10).await.unwrap();
     assert!(response.results.is_empty());
     let warning = response.warning.expect("degraded search warning");
-    assert_eq!(warning.engines.len(), 2);
-    assert_eq!(warning.engines[0].engine, "brave");
-    assert_eq!(warning.engines[0].reason, "too many requests");
+    assert_eq!(warning.upstreams.len(), 2);
+    assert_eq!(warning.upstreams[0].name, "brave");
+    assert_eq!(warning.upstreams[0].reason, "too many requests");
+}
+
+#[tokio::test]
+async fn degoog_native_search_uses_bearer_auth_and_normalizes_results() {
+    let server = MockServer::start().await;
+    let client = SearchClient::new(SearchProviderConfig::Degoog {
+        url: server.uri(),
+        api_key: Some("secret-token".into()),
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/api/search"))
+        .and(query_param("q", "rust lifetimes"))
+        .and(query_param("type", "web"))
+        .and(query_param("page", "1"))
+        .and(header("authorization", "Bearer secret-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "results": [{
+                "title": "Rust lifetimes",
+                "url": "https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html",
+                "snippet": "Lifetimes ensure references are valid.",
+                "source": "Brave",
+                "score": 92
+            }],
+            "engineTimings": [{
+                "name": "Brave",
+                "time": 42,
+                "resultCount": 1,
+                "status": "ok"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let response = client
+        .search_with_diagnostics("rust lifetimes", 10)
+        .await
+        .unwrap();
+
+    assert_eq!(response.results.len(), 1);
+    assert_eq!(response.results[0].title, "Rust lifetimes");
+    assert_eq!(
+        response.results[0].snippet,
+        "Lifetimes ensure references are valid."
+    );
+    assert!(response.warning.is_none());
+}
+
+#[tokio::test]
+async fn degoog_degraded_empty_response_retries_and_preserves_engine_failure() {
+    let server = MockServer::start().await;
+    let client = SearchClient::new(SearchProviderConfig::Degoog {
+        url: server.uri(),
+        api_key: None,
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/api/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "results": [],
+            "engineTimings": [{
+                "name": "Brave",
+                "time": 5000,
+                "resultCount": 0,
+                "status": "rate_limited",
+                "errorReason": "too many requests"
+            }]
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let response = client.search_with_diagnostics("rust", 10).await.unwrap();
+    let warning = response.warning.expect("degraded Degoog warning");
+    assert_eq!(warning.upstreams[0].name, "Brave");
+    assert_eq!(warning.upstreams[0].reason, "too many requests");
+}
+
+#[tokio::test]
+async fn degoog_raw_returns_untouched_body_with_one_request() {
+    let server = MockServer::start().await;
+    let client = SearchClient::new(SearchProviderConfig::Degoog {
+        url: server.uri(),
+        api_key: None,
+    });
+    let raw = r#"{"results":[],"query":"rust","engineTimings":[]}"#;
+
+    Mock::given(method("GET"))
+        .and(path("/api/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(raw))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    assert_eq!(client.search_raw("rust").await.unwrap(), raw);
 }
 
 // ---- T19: parse_malformed_json ---------------------------------------------
@@ -243,7 +341,7 @@ async fn degraded_empty_response_retries_once_then_returns_warning() {
 #[tokio::test]
 async fn parse_malformed_json() {
     let server = MockServer::start().await;
-    let client = SearXNGClient::new(server.uri());
+    let client = searxng_client(server.uri());
 
     Mock::given(method("GET"))
         .and(path("/search"))
@@ -261,7 +359,7 @@ async fn parse_malformed_json() {
 #[tokio::test]
 async fn http_error_status() {
     let server = MockServer::start().await;
-    let client = SearXNGClient::new(server.uri());
+    let client = searxng_client(server.uri());
 
     Mock::given(method("GET"))
         .and(path("/search"))
@@ -279,7 +377,7 @@ async fn http_error_status() {
 #[tokio::test]
 async fn connection_refused() {
     // Use an unreachable port — no wiremock needed
-    let client = SearXNGClient::new("http://127.0.0.1:1".into());
+    let client = searxng_client("http://127.0.0.1:1".into());
     let err = client.search("test", 10).await.unwrap_err();
     let msg = format!("{}", err);
     assert!(msg.contains("connection") || msg.contains("search error"));
@@ -290,7 +388,7 @@ async fn connection_refused() {
 #[tokio::test]
 async fn test_bad_instance_url() {
     // An invalid URL should fail at the reqwest level
-    let client = SearXNGClient::new("not-a-url".into());
+    let client = searxng_client("not-a-url".into());
     let err = client.search("test", 10).await.unwrap_err();
     assert!(format!("{}", err).contains("search error"));
 }
@@ -300,7 +398,7 @@ async fn test_bad_instance_url() {
 #[tokio::test]
 async fn test_result_limit() {
     let server = MockServer::start().await;
-    let client = SearXNGClient::new(server.uri());
+    let client = searxng_client(server.uri());
 
     let mut results_json = Vec::new();
     for i in 0..5 {
@@ -313,9 +411,10 @@ async fn test_result_limit() {
 
     Mock::given(method("GET"))
         .and(path("/search"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(
-            serde_json::json!({ "results": results_json }),
-        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({ "results": results_json })),
+        )
         .mount(&server)
         .await;
 
@@ -327,7 +426,7 @@ async fn test_result_limit() {
 
 #[tokio::test]
 async fn test_empty_query() {
-    let client = SearXNGClient::new("https://cc-searxng.airplane-scala.ts.net".into());
+    let client = searxng_client("https://cc-searxng.airplane-scala.ts.net".into());
     let err = client.search("", 10).await.unwrap_err();
     assert!(format!("{}", err).contains("empty query"));
 }
@@ -337,31 +436,29 @@ async fn test_empty_query() {
 #[tokio::test]
 async fn test_duplicate_urls() {
     let server = MockServer::start().await;
-    let client = SearXNGClient::new(server.uri());
+    let client = searxng_client(server.uri());
 
     Mock::given(method("GET"))
         .and(path("/search"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(
-            serde_json::json!({
-                "results": [
-                    {
-                        "title": "First",
-                        "url": "https://example.com/same",
-                        "content": "First occurrence"
-                    },
-                    {
-                        "title": "Second",
-                        "url": "https://example.com/same",
-                        "content": "Duplicate — should be removed"
-                    },
-                    {
-                        "title": "Third",
-                        "url": "https://example.com/different",
-                        "content": "Different page"
-                    }
-                ]
-            }),
-        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "results": [
+                {
+                    "title": "First",
+                    "url": "https://example.com/same",
+                    "content": "First occurrence"
+                },
+                {
+                    "title": "Second",
+                    "url": "https://example.com/same",
+                    "content": "Duplicate — should be removed"
+                },
+                {
+                    "title": "Third",
+                    "url": "https://example.com/different",
+                    "content": "Different page"
+                }
+            ]
+        })))
         .mount(&server)
         .await;
 
